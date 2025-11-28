@@ -5,6 +5,7 @@ import { StageIntro } from './components/StageIntro';
 import { StageCooking } from './components/StageCooking';
 import { StageFeeding } from './components/StageFeeding';
 import { StageAftermath } from './components/StageAftermath';
+import { StageExplosion } from './components/StageExplosion';
 
 const App: React.FC = () => {
   const [stage, setStage] = useState<GameStage>(GameStage.INTRO);
@@ -39,8 +40,13 @@ const App: React.FC = () => {
 
   const handleFeedingComplete = (colors: string[]) => {
       setFinalColors(colors);
-      setStage(GameStage.AFTERMATH);
+      // Go to Explosion first
+      setStage(GameStage.EXPLOSION);
   };
+
+  const handleExplosionComplete = () => {
+      setStage(GameStage.AFTERMATH);
+  }
 
   const handleRestart = () => {
       setStage(GameStage.INTRO);
@@ -82,6 +88,10 @@ const App: React.FC = () => {
           />
         )}
         
+        {stage === GameStage.EXPLOSION && (
+            <StageExplosion onComplete={handleExplosionComplete} />
+        )}
+
         {stage === GameStage.AFTERMATH && (
           <StageAftermath 
             mixedColors={finalColors}

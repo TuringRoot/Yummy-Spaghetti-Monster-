@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 
 interface StageAftermathProps {
     onRestart: () => void;
@@ -9,715 +8,508 @@ interface StageAftermathProps {
     videoStream: MediaStream | null;
 }
 
-interface BubbleComment {
+interface Comment {
     id: number;
     user: string;
     text: string;
     avatar: string;
-    left: number; // 0-100%
-    sizeScale: number;
-    speed: number;
+    color: string;
 }
 
-enum ParticleMode {
-    CHAOS = 'CHAOS',
-    BOWLS = 'BOWLS',
-    HEART = 'HEART',
-    GIO = 'GIO',
-    SHATTER = 'SHATTER'
-}
+// --- CONSTANTS & TYPES ---
+const MODES = ['CHAOS', 'FLOOR', 'CLUSTERS', 'HEART', 'GIO'] as const;
+type VisualMode = typeof MODES[number];
 
-// Helper: Emoji Texture for Ingredients
-const createEmojiTexture = (emoji: string) => {
-    const canvas = document.createElement('canvas');
-    canvas.width = 128;
-    canvas.height = 128;
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-        ctx.font = 'bold 90px Arial';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillStyle = 'white';
-        ctx.fillText(emoji, 64, 70);
+const PARTICLE_COUNT = 3000;
+
+// --- SHADERS ---
+// Gives particles a "wet", solid, somewhat glowing food-chunk look
+const particleVertexShader = `
+  attribute float size;
+  attribute vec3 customColor;
+  varying vec3 vColor;
+  void main() {
+    vColor = customColor;
+    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+    // Scale by distance, but keep a minimum size for visibility
+    gl_PointSize = size * (400.0 / -mvPosition.z); 
+    gl_Position = projectionMatrix * mvPosition;
+  }
+`;
+
+const particleFragmentShader = `
+  varying vec3 vColor;
+  void main() {
+    vec2 coord = gl_PointCoord - vec2(0.5);
+    float dist = length(coord);
+    if (dist > 0.5) discard;
+    
+    // Diffuse shading (sphere look)
+    float diffuse = sqrt(1.0 - dist*dist*4.0);
+    
+    // Specular highlight (wetness / oily)
+    vec2 lightPos = vec2(-0.15, -0.15);
+    float spec = 0.0;
+    // Sharper highlight for "oily" feel
+    if (distance(coord, lightPos) < 0.12) {
+        spec = 0.7;
     }
-    const texture = new THREE.CanvasTexture(canvas);
-    return texture;
-};
 
-// Helper: Solid Circle for Chunks
-const createSolidCircleTexture = () => {
-    const canvas = document.createElement('canvas');
-    canvas.width = 64; 
-    canvas.height = 64;
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-        ctx.beginPath();
-        ctx.arc(32, 32, 30, 0, Math.PI * 2);
-        ctx.fillStyle = '#ffffff';
-        ctx.fill();
-    }
-    return new THREE.CanvasTexture(canvas);
-};
+    // Rim lighting (Cosmic/Volume feel)
+    float rim = smoothstep(0.35, 0.5, dist) * 0.4;
 
-// Helper: Eyeball Texture
-const createEyeballTexture = () => {
-    const canvas = document.createElement('canvas');
-    canvas.width = 128;
-    canvas.height = 128;
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-        // Sclera
-        ctx.beginPath();
-        ctx.arc(64, 64, 60, 0, Math.PI * 2);
-        ctx.fillStyle = '#f3f4f6';
-        ctx.fill();
-        
-        // Veins
-        ctx.strokeStyle = 'rgba(220, 38, 38, 0.4)'; // Red veins
-        ctx.lineWidth = 2;
-        for(let i=0; i<6; i++) {
-            const angle = (Math.PI * 2 / 6) * i + Math.random() * 0.5;
-            ctx.beginPath();
-            ctx.moveTo(64 + Math.cos(angle)*30, 64 + Math.sin(angle)*30);
-            ctx.quadraticCurveTo(
-                64 + Math.cos(angle)*50, 
-                64 + Math.sin(angle)*50,
-                64 + Math.cos(angle)*60, 
-                64 + Math.sin(angle)*60
-            );
-            ctx.stroke();
-        }
-
-        // Iris
-        ctx.beginPath();
-        ctx.arc(64, 64, 32, 0, Math.PI * 2);
-        ctx.fillStyle = '#dc2626'; // Monster Red
-        ctx.fill();
-        ctx.lineWidth = 3;
-        ctx.strokeStyle = '#7f1d1d';
-        ctx.stroke();
-
-        // Pupil
-        ctx.beginPath();
-        ctx.arc(64, 64, 16, 0, Math.PI * 2);
-        ctx.fillStyle = '#0f172a';
-        ctx.fill();
-        
-        // Shine
-        ctx.beginPath();
-        ctx.arc(80, 48, 8, 0, Math.PI * 2);
-        ctx.fillStyle = '#ffffff';
-        ctx.fill();
-    }
-    return new THREE.CanvasTexture(canvas);
-};
+    // Base color + highlights
+    vec3 finalColor = vColor * (0.3 + diffuse * 0.7) + vec3(spec) + vec3(rim * 0.5, rim * 0.2, 0.0);
+    gl_FragColor = vec4(finalColor, 1.0);
+  }
+`;
 
 export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixedColors, ingredients, videoStream }) => {
   const containerRef = useRef<HTMLDivElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  
+  // State
+  const [mode, setMode] = useState<VisualMode>('CHAOS');
+  const [comments, setComments] = useState<Comment[]>([]);
+  const [likes, setLikes] = useState(12400);
 
+  // Three.js Refs
   const sceneRef = useRef<THREE.Scene | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
-  const modeRef = useRef<ParticleMode>(ParticleMode.CHAOS); // Default to Chaos (Explosion)
-  const particleTargetsRef = useRef<Float32Array | null>(null);
-  const timeRef = useRef(0);
-  const mousePosRef = useRef(new THREE.Vector3(0,0,0));
-  
   const particlesRef = useRef<THREE.Points | null>(null);
-  const ingredientSpritesRef = useRef<THREE.Sprite[]>([]);
-  const eyeballsRef = useRef<THREE.Sprite[]>([]);
-  const bowlCentersRef = useRef<THREE.Vector3[]>([]);    
-
-  const isHandActiveRef = useRef(false);
   
-  const [comments, setComments] = useState<BubbleComment[]>([]);
-  const [likes, setLikes] = useState(2500);
-  const [activeMode, setActiveMode] = useState<ParticleMode>(ParticleMode.CHAOS);
-  const [flashOpacity, setFlashOpacity] = useState(1);
-  const [showBowlText, setShowBowlText] = useState(false); 
-  const [giftEffect, setGiftEffect] = useState<{id:number, x:number, emoji:string}[]>([]);
+  // Physics Refs for Morphing
+  const currentPositionsRef = useRef<Float32Array | null>(null);
+  const targetPositionsRef = useRef<Record<VisualMode, Float32Array> | null>(null);
+  const velocitiesRef = useRef<Float32Array | null>(null);
+  
+  // Interaction Refs
+  const mouseRef = useRef({ x: 0, y: 0 }); // Normalized -1 to 1
+  const raycasterRef = useRef(new THREE.Raycaster());
+  const mouseVectorRef = useRef(new THREE.Vector3());
+  
+  const frameIdRef = useRef<number>(0);
+  const timeRef = useRef(0);
 
-  // Vision Refs
-  const handLandmarkerRef = useRef<HandLandmarker | null>(null);
-  const lastVideoTimeRef = useRef(-1);
+  // --- 1. SHAPE GENERATORS ---
+  const generateShapes = (width: number, height: number) => {
+      const targets: Record<VisualMode, Float32Array> = {
+          CHAOS: new Float32Array(PARTICLE_COUNT * 3),
+          FLOOR: new Float32Array(PARTICLE_COUNT * 3),
+          CLUSTERS: new Float32Array(PARTICLE_COUNT * 3),
+          HEART: new Float32Array(PARTICLE_COUNT * 3),
+          GIO: new Float32Array(PARTICLE_COUNT * 3),
+      };
 
-  // --- Vision Setup ---
-  useEffect(() => {
-    const setupVision = async () => {
-        try {
-            const vision = await FilesetResolver.forVisionTasks(
-                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
-            );
-            handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, {
-                baseOptions: {
-                    modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
-                    delegate: "GPU"
-                },
-                runningMode: "VIDEO",
-                numHands: 1
-            });
-        } catch (e) {
-            console.error("Failed to load MediaPipe Hands", e);
-        }
-    };
-    setupVision();
-  }, []);
-
-  // Sync Video
-  useEffect(() => {
-    if (videoRef.current && videoStream) {
-        videoRef.current.srcObject = videoStream;
-        videoRef.current.onloadedmetadata = () => {
-            videoRef.current?.play().catch(e => console.log("Video play error", e));
-        };
-    }
-  }, [videoStream]);
-
-  // --- Chat Bubble Generator ---
-  useEffect(() => {
-      const users = ["Foodie_HK", "Campus_Cat", "Prof_Gio", "SpaghettiLover", "PolyU_Student", "Canteen_Critic", "YummyYum"];
-      const messages = [
-          "Looks delicious! 🤤", "So satisfying to watch!", "Is that edible? 😂", 
-          "Chef is cooking!! 👨‍🍳", "I want some!", "Wait, what did you put in there?", 
-          "More cheese please!", "5 Stars! ⭐⭐⭐⭐⭐", "Epic meal time", "Can I have the recipe?"
-      ];
-      const avatars = ["🍔", "🐱", "👨‍🏫", "🍝", "🎓", "🧐", "😋"];
-
-      const interval = setInterval(() => {
-          const id = Date.now();
-          const newComment: BubbleComment = {
-              id,
-              user: users[Math.floor(Math.random() * users.length)],
-              text: messages[Math.floor(Math.random() * messages.length)],
-              avatar: avatars[Math.floor(Math.random() * avatars.length)],
-              left: Math.random() * 80 + 5,
-              sizeScale: 0.8 + Math.random() * 0.4,
-              speed: 2 + Math.random() * 2 
+      // Helper: Random Point in Sphere
+      const randomSphere = (radius: number) => {
+          const u = Math.random();
+          const v = Math.random();
+          const theta = 2 * Math.PI * u;
+          const phi = Math.acos(2 * v - 1);
+          const r = Math.cbrt(Math.random()) * radius;
+          return {
+              x: r * Math.sin(phi) * Math.cos(theta),
+              y: r * Math.sin(phi) * Math.sin(theta),
+              z: r * Math.cos(phi)
           };
+      };
+
+      // A. CHAOS (Explosion / Universe)
+      for(let i=0; i<PARTICLE_COUNT; i++) {
+          const p = randomSphere(500); // Large spread
+          targets.CHAOS[i*3] = p.x;
+          targets.CHAOS[i*3+1] = p.y;
+          targets.CHAOS[i*3+2] = p.z;
+      }
+
+      // B. FLOOR (Scattered Debris)
+      for(let i=0; i<PARTICLE_COUNT; i++) {
+          // Spread on XZ plane, fixed Y
+          const angle = Math.random() * Math.PI * 2;
+          const r = Math.sqrt(Math.random()) * 400; // Disc
+          targets.FLOOR[i*3] = Math.cos(angle) * r;
+          targets.FLOOR[i*3+1] = -200 + (Math.random() * 20); // Floor level with slight pile
+          targets.FLOOR[i*3+2] = Math.sin(angle) * r;
+      }
+
+      // C. CLUSTERS (30 Groups)
+      const centers: {x:number, y:number, z:number}[] = [];
+      for(let c=0; c<30; c++) {
+          centers.push(randomSphere(250));
+      }
+      for(let i=0; i<PARTICLE_COUNT; i++) {
+          const center = centers[i % 30];
+          // Gaussian puff around center
+          const puff = randomSphere(30);
+          targets.CLUSTERS[i*3] = center.x + puff.x;
+          targets.CLUSTERS[i*3+1] = center.y + puff.y;
+          targets.CLUSTERS[i*3+2] = center.z + puff.z;
+      }
+
+      // D. HEART (Descartes/Parametric)
+      for(let i=0; i<PARTICLE_COUNT; i++) {
+          const t = Math.random() * Math.PI * 2;
+          const scale = 12;
+          const x = 16 * Math.pow(Math.sin(t), 3);
+          const y = 13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t);
           
-          setComments(prev => {
-              const keep = prev.filter(c => (Date.now() - c.id) < 6000); 
-              return [...keep, newComment];
-          });
-      }, 1200);
-
-      return () => clearInterval(interval);
-  }, []);
-
-
-  // --- Target Generators ---
-  const PARTICLE_COUNT = 1200; // Increased for "Exploded" feel
-  const EYEBALL_COUNT = 8;
-  // Total objects to manage targets for
-  const TOTAL_OBJECTS = PARTICLE_COUNT + ingredients.length + EYEBALL_COUNT;
-
-  const generateTargets = (mode: ParticleMode) => {
-      const targets = new Float32Array(TOTAL_OBJECTS * 3);
-      
-      if (mode === ParticleMode.BOWLS) {
-        const bowlCount = 30;
-        if (bowlCentersRef.current.length !== bowlCount) {
-            bowlCentersRef.current = [];
-            for(let i=0; i<bowlCount; i++) {
-                bowlCentersRef.current.push(new THREE.Vector3(
-                    (Math.random()-0.5)*700, 
-                    (Math.random()-0.5)*400, 
-                    (Math.random()-0.5)*100
-                ));
-            }
-        }
-        for(let i=0; i<TOTAL_OBJECTS; i++) {
-            const c = bowlCentersRef.current[i % bowlCount];
-            const theta = Math.random() * Math.PI * 2;
-            const r = Math.random() * 30;
-            targets[i*3] = c.x + Math.cos(theta)*r;
-            targets[i*3+1] = c.y + (Math.random())*25 - 5; 
-            targets[i*3+2] = c.z + Math.sin(theta)*r;
-        }
-
-      } else if (mode === ParticleMode.HEART) {
-        for(let i=0; i<TOTAL_OBJECTS; i++) {
-            const t = Math.random() * Math.PI * 2;
-            const x = 16 * Math.pow(Math.sin(t), 3);
-            const y = 13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t);
-            const scale = 14;
-            targets[i*3] = x * scale + (Math.random()-0.5)*20;
-            targets[i*3+1] = y * scale + 50 + (Math.random()-0.5)*20;
-            targets[i*3+2] = (Math.random()-0.5) * 60;
-        }
-
-      } else if (mode === ParticleMode.GIO) {
-          const setP = (i: number, x: number, y: number) => {
-            targets[i*3] = x + (Math.random()-0.5)*30; 
-            targets[i*3+1] = y + (Math.random()-0.5)*30;
-            targets[i*3+2] = (Math.random()-0.5)*50;
-          };
-          const part1 = Math.floor(TOTAL_OBJECTS * 0.4);
-          const part2 = Math.floor(TOTAL_OBJECTS * 0.6);
+          const thickness = 5 + Math.random() * 5;
           
-          const gCenterX = -250; const gRadius = 110;
-          for (let i = 0; i < part1; i++) {
-              const ratio = i / part1;
-              if (ratio < 0.75) {
-                  const angle = (Math.PI/4) + (ratio/0.75) * (1.5 * Math.PI);
-                  setP(i, gCenterX + Math.cos(angle)*gRadius, Math.sin(angle)*gRadius);
+          targets.HEART[i*3] = x * scale + (Math.random()-0.5)*thickness;
+          targets.HEART[i*3+1] = y * scale + (Math.random()-0.5)*thickness + 50; 
+          targets.HEART[i*3+2] = (Math.random()-0.5) * 40; 
+      }
+
+      // E. GIO (Text Sampling)
+      const txtCanvas = document.createElement('canvas');
+      txtCanvas.width = 200;
+      txtCanvas.height = 100;
+      const ctx = txtCanvas.getContext('2d');
+      if (ctx) {
+          ctx.fillStyle = '#000';
+          ctx.fillRect(0,0,200,100);
+          ctx.fillStyle = '#fff';
+          ctx.font = 'bold 80px Arial';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('GIO', 100, 50);
+          
+          const imgData = ctx.getImageData(0,0,200,100);
+          const validPixels: number[] = [];
+          for(let j=0; j<imgData.data.length; j+=4) {
+              if (imgData.data[j] > 100) validPixels.push(j/4); 
+          }
+
+          for(let i=0; i<PARTICLE_COUNT; i++) {
+              if (validPixels.length > 0) {
+                  const pxIndex = validPixels[i % validPixels.length]; 
+                  const pxX = pxIndex % 200;
+                  const pxY = Math.floor(pxIndex / 200);
+                  
+                  targets.GIO[i*3] = (pxX - 100) * 4 + (Math.random()-0.5)*8;
+                  targets.GIO[i*3+1] = -(pxY - 50) * 4 + (Math.random()-0.5)*8;
+                  targets.GIO[i*3+2] = (Math.random()-0.5) * 30;
               } else {
-                  const lineRatio = (ratio - 0.75) / 0.25;
-                  setP(i, (gCenterX + gRadius) - lineRatio * (gRadius * 0.6), -gRadius * 0.1);
+                   targets.GIO[i*3] = 0; targets.GIO[i*3+1] = 0; targets.GIO[i*3+2] = 0;
               }
           }
-          for (let i = part1; i < part2; i++) {
-              const ratio = (i - part1) / (part2 - part1);
-              const y = (ratio - 0.5) * 260;
-              setP(i, 0, y);
-          }
-          const oCenterX = 250;
-          for (let i = part2; i < TOTAL_OBJECTS; i++) {
-              const ratio = (i - part2) / (TOTAL_OBJECTS - part2);
-              const angle = ratio * Math.PI * 2;
-              setP(i, oCenterX + Math.cos(angle)*110, Math.sin(angle)*110);
-          }
-
-      } else if (mode === ParticleMode.SHATTER) {
-        for(let i=0; i<TOTAL_OBJECTS; i++) {
-            targets[i*3] = (Math.random()-0.5) * 900;
-            targets[i*3+1] = -300 + Math.random() * 40; 
-            targets[i*3+2] = (Math.random()-0.5) * 500;
-        }
       }
 
       return targets;
   };
 
-  const handleSendGift = () => {
-      const id = Date.now();
-      const emojis = ['🎁', '💎', '🚀', '🍝', '👑', '🏰'];
-      const chosenEmoji = emojis[Math.floor(Math.random()*emojis.length)];
-
-      setGiftEffect(prev => [...prev, { id, x: Math.random() * 100, emoji: chosenEmoji }]);
-      setLikes(l => l + 500);
-      
-      const newComment: BubbleComment = {
-          id: id + 1,
-          user: "YOU",
-          text: `sent ${chosenEmoji} Super Gift!`,
-          avatar: "😎",
-          left: 50,
-          sizeScale: 1.2,
-          speed: 3
-      };
-      setComments(prev => [...prev, newComment]);
-
-      setTimeout(() => {
-          setGiftEffect(prev => prev.filter(e => e.id !== id));
-      }, 2000);
-  };
-
-  const switchMode = (newMode: ParticleMode) => {
-      modeRef.current = newMode;
-      setActiveMode(newMode);
-      setShowBowlText(newMode === ParticleMode.BOWLS);
-
-      if (newMode !== ParticleMode.CHAOS) {
-          particleTargetsRef.current = generateTargets(newMode);
-      } else {
-          particleTargetsRef.current = null;
-      }
-  };
-
+  // --- 2. INIT SCENE ---
   useEffect(() => {
-    const timer = setTimeout(() => setFlashOpacity(0), 100);
-    return () => clearTimeout(timer);
-  }, []);
+    if (!containerRef.current || !canvasRef.current) return;
 
-  // --- Three.js Initialization ---
-  useEffect(() => {
-    if (!containerRef.current) return;
-    
-    if (rendererRef.current && rendererRef.current.domElement) {
-        containerRef.current.removeChild(rendererRef.current.domElement);
-        rendererRef.current.dispose();
-    }
+    const width = window.innerWidth;
+    const height = window.innerHeight;
 
-    const width = containerRef.current.clientWidth;
-    const height = containerRef.current.clientHeight;
-
+    // A. Setup Three.js
     const scene = new THREE.Scene();
-    // Dark Reddish Black background for Aftermath vibe
-    scene.background = new THREE.Color(0x1a0505); 
-    scene.fog = new THREE.FogExp2(0x1a0505, 0.0008);
-    sceneRef.current = scene;
+    scene.background = new THREE.Color(0x050505); // Deep space black
+    
+    // Camera
+    const camera = new THREE.PerspectiveCamera(60, width / height, 0.1, 2000);
+    camera.position.z = 500;
+    camera.position.y = 50;
 
-    const camera = new THREE.PerspectiveCamera(60, width / height, 1, 3000);
-    camera.position.z = 800;
-    cameraRef.current = camera;
-
-    const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
-    renderer.setPixelRatio(window.devicePixelRatio);
+    const renderer = new THREE.WebGLRenderer({ 
+        canvas: canvasRef.current, 
+        antialias: true,
+        powerPreference: "high-performance"
+    });
     renderer.setSize(width, height);
-    containerRef.current.appendChild(renderer.domElement);
-    rendererRef.current = renderer;
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
-    // --- 1. Sauce Chunks (Particles) ---
-    const geometry = new THREE.BufferGeometry();
+    // B. Generate Shapes & Buffers
+    const targets = generateShapes(width, height);
+    targetPositionsRef.current = targets;
+
     const positions = new Float32Array(PARTICLE_COUNT * 3);
     const colors = new Float32Array(PARTICLE_COUNT * 3);
     const sizes = new Float32Array(PARTICLE_COUNT);
+    const vels = new Float32Array(PARTICLE_COUNT * 3); // Velocity
 
-    const palette = mixedColors.length > 0 ? mixedColors : ['#fbbf24', '#f59e0b', '#b45309', '#78350f'];
-
+    // Init Particles
+    const colorObj = new THREE.Color();
     for(let i=0; i<PARTICLE_COUNT; i++) {
-        // Broad initial explosion distribution
-        positions[i*3] = (Math.random()-0.5) * 600;
-        positions[i*3+1] = (Math.random()-0.5) * 600;
-        positions[i*3+2] = (Math.random()-0.5) * 400;
+        // Start at CHAOS
+        positions[i*3] = targets.CHAOS[i*3];
+        positions[i*3+1] = targets.CHAOS[i*3+1];
+        positions[i*3+2] = targets.CHAOS[i*3+2];
 
-        const c = new THREE.Color(palette[Math.floor(Math.random() * palette.length)]);
-        c.offsetHSL(0, 0, (Math.random()-0.5)*0.1);
+        // Colors - use mixing logic
+        let hex = '#fbbf24';
+        if (mixedColors.length > 0) hex = mixedColors[i % mixedColors.length];
+        else hex = i % 2 === 0 ? '#ef4444' : '#fbbf24'; 
         
-        colors[i*3] = c.r;
-        colors[i*3+1] = c.g;
-        colors[i*3+2] = c.b;
+        colorObj.set(hex);
+        // Random variation for "messy food" look
+        colorObj.offsetHSL(0, (Math.random()-0.5)*0.1, (Math.random()-0.5)*0.2);
+
+        colors[i*3] = colorObj.r;
+        colors[i*3+1] = colorObj.g;
+        colors[i*3+2] = colorObj.b;
 
         // Varied chunk sizes
-        sizes[i] = Math.random() > 0.8 ? 25 + Math.random()*25 : 8 + Math.random()*8;
+        sizes[i] = 5 + Math.random() * 25; 
     }
 
+    currentPositionsRef.current = positions;
+    velocitiesRef.current = vels;
+
+    const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geometry.setAttribute('customColor', new THREE.BufferAttribute(colors, 3));
     geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
 
-    const material = new THREE.PointsMaterial({ 
-        size: 1, 
-        vertexColors: true, 
-        map: createSolidCircleTexture(), 
-        blending: THREE.NormalBlending, 
-        depthTest: true, 
-        transparent: true,
-        opacity: 0.95 
+    const material = new THREE.ShaderMaterial({
+        uniforms: {},
+        vertexShader: particleVertexShader,
+        fragmentShader: particleFragmentShader,
+        blending: THREE.NormalBlending, // Solid chunks
+        depthTest: true,
+        depthWrite: false,
+        transparent: true
     });
 
-    const particles = new THREE.Points(geometry, material);
-    scene.add(particles);
-    particlesRef.current = particles;
+    const points = new THREE.Points(geometry, material);
+    scene.add(points);
+    particlesRef.current = points;
 
-    // --- 2. Ingredient Sprites ---
-    const ingredientSprites: THREE.Sprite[] = [];
-    const usedIngredients = ingredients.length > 0 ? ingredients : ['🍅', '🍄', '🥩'];
-    
-    usedIngredients.forEach((emoji) => {
-        const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
-            map: createEmojiTexture(emoji),
-            transparent: true,
-            opacity: 1.0
-        }));
-        const scale = 50 + Math.random() * 30;
-        sprite.scale.set(scale, scale, 1);
-        sprite.position.set((Math.random()-0.5)*500, (Math.random()-0.5)*500, (Math.random()-0.5)*500);
-        scene.add(sprite);
-        ingredientSprites.push(sprite);
-    });
-    ingredientSpritesRef.current = ingredientSprites;
-
-    // --- 3. Eyeball Sprites (Restored!) ---
-    const eyeballs: THREE.Sprite[] = [];
-    for(let i=0; i<EYEBALL_COUNT; i++) {
-        const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
-            map: createEyeballTexture(),
-            transparent: true,
-            opacity: 1.0
-        }));
-        // 2 Big Monster Eyes, rest smaller debris
-        const size = i < 2 ? 140 : 40 + Math.random() * 30;
-        sprite.scale.set(size, size, 1);
-        sprite.position.set(
-            (Math.random()-0.5)*600, 
-            (Math.random()-0.5)*600, 
-            (Math.random()-0.5)*600
-        );
-        scene.add(sprite);
-        eyeballs.push(sprite);
-    }
-    eyeballsRef.current = eyeballs;
-
-    // Set Default Mode to CHAOS for explosion feel
-    switchMode(ParticleMode.CHAOS);
-
-    // --- Animation Loop ---
-    const animate = () => {
-        const now = performance.now();
-        timeRef.current += 0.004;
-
-        // Vision Hand Track
-        if (videoRef.current && handLandmarkerRef.current && now - lastVideoTimeRef.current > 50) {
-             lastVideoTimeRef.current = now;
-             const res = handLandmarkerRef.current.detectForVideo(videoRef.current, now);
-             
-             if (res.landmarks && res.landmarks.length > 0) {
-                 isHandActiveRef.current = true;
-                 const hand = res.landmarks[0];
-                 const palm = hand[9]; 
-                 const vH = 2 * 800 * Math.tan(THREE.MathUtils.degToRad(30));
-                 const vW = vH * (width / height);
-                 mousePosRef.current.set(
-                     (1 - palm.x - 0.5) * vW,
-                     -(palm.y - 0.5) * vH,
-                     0
-                 );
-             } else {
-                 isHandActiveRef.current = false;
-             }
-        }
-
-        const posAttr = particles.geometry.attributes.position;
-        const posArr = posAttr.array as Float32Array;
-        const targets = particleTargetsRef.current;
-        const mousePos = mousePosRef.current;
-        const isInteracting = isHandActiveRef.current;
-
-        // 1. Update Particles
-        for(let i=0; i<PARTICLE_COUNT; i++) {
-            const idx = i*3;
-            let px = posArr[idx];
-            let py = posArr[idx+1];
-            let pz = posArr[idx+2];
-
-            if (targets && modeRef.current !== ParticleMode.CHAOS) {
-                const tx = targets[idx];
-                const ty = targets[idx+1];
-                const tz = targets[idx+2];
-                const lerpFactor = 0.03 + Math.random() * 0.02; 
-                px += (tx - px) * lerpFactor;
-                py += (ty - py) * lerpFactor;
-                pz += (tz - pz) * lerpFactor;
-            } 
-            
-            // Floating Drift
-            const drift = 0.6;
-            px += Math.sin(timeRef.current + py * 0.005) * drift;
-            py += Math.cos(timeRef.current + px * 0.005) * drift;
-
-            // Hand Repulsion
-            if (isInteracting) {
-                const dx = px - mousePos.x;
-                const dy = py - mousePos.y;
-                const dz = pz - mousePos.z;
-                const distSq = dx*dx + dy*dy + dz*dz;
-                if (distSq < 300*300) {
-                    const dist = Math.sqrt(distSq);
-                    const force = (300 - dist) / 300;
-                    const repulsion = force * 15;
-                    px += (dx/dist) * repulsion;
-                    py += (dy/dist) * repulsion;
-                    pz += (dz/dist) * repulsion;
-                }
-            }
-            
-            // Gravity only in SHATTER mode
-            if (modeRef.current === ParticleMode.SHATTER) {
-                if (py > -350) py -= 1; 
-            }
-
-            posArr[idx] = px;
-            posArr[idx+1] = py;
-            posArr[idx+2] = pz;
-        }
-        posAttr.needsUpdate = true;
-
-        // Helper for Sprite Updates
-        const updateSprite = (sprite: THREE.Sprite, indexOffset: number) => {
-            const targetIndex = indexOffset * 3;
-            let tx = sprite.position.x; 
-            let ty = sprite.position.y; 
-            let tz = sprite.position.z;
-
-            if (targets && modeRef.current !== ParticleMode.CHAOS) {
-                tx = targets[targetIndex];
-                ty = targets[targetIndex+1];
-                tz = targets[targetIndex+2];
-                sprite.position.lerp(new THREE.Vector3(tx, ty, tz), 0.02);
-            } else {
-                 // Chaos Float
-                 sprite.position.y += Math.sin(timeRef.current + indexOffset) * 0.5;
-            }
-
-            // Repulsion
-            if (isInteracting) {
-                const dist = sprite.position.distanceTo(mousePos);
-                if (dist < 300) {
-                     const dir = sprite.position.clone().sub(mousePos).normalize().multiplyScalar(5);
-                     sprite.position.add(dir);
-                }
-            }
-            sprite.material.rotation = Math.sin(timeRef.current * 0.5 + indexOffset) * 0.15;
-        };
-
-        // 2. Update Ingredients
-        ingredientSprites.forEach((sprite, i) => updateSprite(sprite, PARTICLE_COUNT + i));
-
-        // 3. Update Eyeballs
-        eyeballs.forEach((sprite, i) => updateSprite(sprite, PARTICLE_COUNT + ingredientSprites.length + i));
-
-        // Camera Spin
-        scene.rotation.y = Math.sin(timeRef.current * 0.15) * 0.08;
-
-        renderer.render(scene, camera);
-        requestAnimationFrame(animate);
-    };
-    animate();
+    // C. Refs Assignment
+    sceneRef.current = scene;
+    cameraRef.current = camera;
+    rendererRef.current = renderer;
 
     const handleResize = () => {
-        if (!containerRef.current || !cameraRef.current || !rendererRef.current) return;
-        const w = containerRef.current.clientWidth;
-        const h = containerRef.current.clientHeight;
-        cameraRef.current.aspect = w/h;
-        cameraRef.current.updateProjectionMatrix();
-        rendererRef.current.setSize(w, h);
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+        renderer.setSize(w, h);
     };
     window.addEventListener('resize', handleResize);
 
     return () => {
         window.removeEventListener('resize', handleResize);
-        if (rendererRef.current && containerRef.current) {
-             containerRef.current.removeChild(rendererRef.current.domElement);
-             rendererRef.current.dispose();
-        }
-        geometry.dispose();
+        renderer.dispose();
     };
-  }, [mixedColors, ingredients]);
+  }, [mixedColors]);
+
+  // --- 3. ANIMATION LOOP ---
+  useEffect(() => {
+    const loop = () => {
+        if (!particlesRef.current || !targetPositionsRef.current || !currentPositionsRef.current || !velocitiesRef.current) return;
+
+        timeRef.current += 0.01;
+        const positions = particlesRef.current.geometry.attributes.position.array as Float32Array;
+        const target = targetPositionsRef.current[mode];
+        const vels = velocitiesRef.current;
+        const camera = cameraRef.current;
+
+        // Camera Orbit
+        if (camera) {
+            const r = 550;
+            const speed = 0.2;
+            const targetX = r * Math.cos(timeRef.current * speed + mouseRef.current.x * 0.5);
+            const targetZ = r * Math.sin(timeRef.current * speed + mouseRef.current.x * 0.5);
+            
+            // Smooth lerp camera
+            camera.position.x += (targetX - camera.position.x) * 0.05;
+            camera.position.z += (targetZ - camera.position.z) * 0.05;
+            camera.lookAt(0, 0, 0);
+        }
+
+        // --- Interaction: Project Mouse to 3D Space ---
+        // We define a point in 3D space corresponding to the mouse cursor on the Z=0 plane (or average particle plane)
+        let mouseWorld = new THREE.Vector3(0,0,0);
+        if (camera) {
+            mouseVectorRef.current.set(mouseRef.current.x, mouseRef.current.y, 0.5);
+            mouseVectorRef.current.unproject(camera);
+            mouseVectorRef.current.sub(camera.position).normalize();
+            const distance = -camera.position.z / mouseVectorRef.current.z;
+            mouseWorld = camera.position.clone().add(mouseVectorRef.current.multiplyScalar(distance));
+        }
+
+        // Particle Physics (Spring to Target + Mouse Repulsion)
+        for(let i=0; i<PARTICLE_COUNT; i++) {
+            const idx = i*3;
+            
+            const tx = target[idx];
+            const ty = target[idx+1];
+            const tz = target[idx+2];
+
+            const px = positions[idx];
+            const py = positions[idx+1];
+            const pz = positions[idx+2];
+
+            // 1. Spring force to shape
+            const k = 0.02 + Math.random() * 0.01; 
+            const ax = (tx - px) * k;
+            const ay = (ty - py) * k;
+            const az = (tz - pz) * k;
+
+            // 2. Mouse Repulsion / Fluid Ripple
+            // Calculate distance to mouse world position (ignoring heavy Z depth diff to simulate 2.5D interaction)
+            const dx = px - mouseWorld.x;
+            const dy = py - mouseWorld.y;
+            const dz = pz - mouseWorld.z; // Include Z for true volumetric feel
+            const distSq = dx*dx + dy*dy + dz*dz;
+            
+            let fx = 0, fy = 0, fz = 0;
+            const interactRadius = 25000; // Squared radius (approx 150 units)
+
+            if (distSq < interactRadius && distSq > 0.1) {
+                const dist = Math.sqrt(distSq);
+                const force = (1 - dist / Math.sqrt(interactRadius)) * 2.5; // Strong push
+                fx = (dx / dist) * force;
+                fy = (dy / dist) * force;
+                fz = (dz / dist) * force;
+            }
+
+            // 3. Noise / Drift
+            const noiseScale = 0.15;
+            const nx = (Math.random() - 0.5) * noiseScale;
+            const ny = (Math.random() - 0.5) * noiseScale;
+            const nz = (Math.random() - 0.5) * noiseScale;
+
+            vels[idx]   += ax + nx + fx;
+            vels[idx+1] += ay + ny + fy;
+            vels[idx+2] += az + nz + fz;
+
+            // 4. Damping (Drag) - Simulates viscosity
+            const friction = 0.92;
+            vels[idx]   *= friction;
+            vels[idx+1] *= friction;
+            vels[idx+2] *= friction;
+
+            // Update Position
+            positions[idx]   += vels[idx];
+            positions[idx+1] += vels[idx+1];
+            positions[idx+2] += vels[idx+2];
+        }
+        
+        particlesRef.current.geometry.attributes.position.needsUpdate = true;
+        rendererRef.current?.render(sceneRef.current!, cameraRef.current!);
+        frameIdRef.current = requestAnimationFrame(loop);
+    };
+
+    frameIdRef.current = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(frameIdRef.current);
+  }, [mode]);
+
+  // --- 4. CHAT SIMULATION ---
+  useEffect(() => {
+    const names = ["PastaFan99", "GourmetHunter", "SchoolCanteen", "GioTeacher", "HungryStudent", "FoodCritic_X", "YummyYum"];
+    const msgs = [
+        "OMG IT EXPLODED!! 🤯",
+        "Mathematical Beauty!",
+        "Is that a heart? ❤️",
+        "GIO GIO GIO",
+        "It's like Interstellar...",
+        "Chaotic but tasty",
+        "Physics engine go brrr",
+        "Mamma Mia! 🍝"
+    ];
+    const colors = ["#f87171", "#fbbf24", "#60a5fa", "#4ade80", "#c084fc"];
+    const avatars = ["😲", "😋", "😱", "😂", "👨‍🍳", "🍝"];
+
+    const interval = setInterval(() => {
+        setComments(prev => {
+            const newComment = {
+                id: Date.now(),
+                user: names[Math.floor(Math.random() * names.length)],
+                text: msgs[Math.floor(Math.random() * msgs.length)],
+                avatar: avatars[Math.floor(Math.random() * avatars.length)],
+                color: colors[Math.floor(Math.random() * colors.length)]
+            };
+            return [newComment, ...prev].slice(0, 8);
+        });
+        setLikes(l => l + Math.floor(Math.random() * 50));
+    }, 1200);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+      // Normalize to -1 to 1
+      mouseRef.current.x = (e.clientX / window.innerWidth) * 2 - 1;
+      mouseRef.current.y = -(e.clientY / window.innerHeight) * 2 + 1;
+  };
+
+  const cycleMode = () => {
+      const idx = MODES.indexOf(mode);
+      const nextIdx = (idx + 1) % MODES.length;
+      setMode(MODES[nextIdx]);
+  };
 
   return (
-    <div className="relative w-full h-full bg-black overflow-hidden font-sans">
-        <style>{`
-            @keyframes floatBubble {
-                0% { transform: translateY(100px) scale(0.8); opacity: 0; }
-                10% { transform: translateY(0) scale(1); opacity: 1; }
-                80% { opacity: 1; }
-                100% { transform: translateY(-600px) scale(1.1); opacity: 0; }
-            }
-            .animate-float {
-                animation-name: floatBubble;
-                animation-timing-function: linear;
-                animation-fill-mode: forwards;
-            }
-        `}</style>
-        
-        <div ref={containerRef} className="absolute inset-0 z-0" />
-        <video ref={videoRef} className="absolute top-0 left-0 w-1 h-1 opacity-0 pointer-events-none" muted playsInline />
-
-        <div 
-            className="absolute inset-0 bg-white pointer-events-none transition-opacity duration-1000 z-50" 
-            style={{ opacity: flashOpacity }}
-        />
-
-        {/* Floating Chat */}
-        <div className="absolute inset-0 pointer-events-none overflow-hidden z-20">
-            {comments.map((c) => (
-                <div 
-                    key={c.id} 
-                    className="absolute flex items-center gap-2 px-4 py-2 bg-black/50 backdrop-blur-md rounded-full border border-white/20 shadow-xl animate-float"
-                    style={{
-                        left: `${c.left}%`,
-                        bottom: '0px',
-                        animationDuration: `${c.speed}s`,
-                        transformOrigin: 'center bottom',
-                        scale: c.sizeScale
-                    }}
-                >
-                    <div className="text-xl filter drop-shadow-md">{c.avatar}</div>
-                    <div className="flex flex-col leading-tight">
-                         <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">{c.user}</span>
-                         <span className="text-sm font-bold text-white drop-shadow-sm whitespace-nowrap">{c.text}</span>
+    <div 
+        ref={containerRef} 
+        className="relative w-full h-full bg-black overflow-hidden"
+        onMouseMove={handleMouseMove}
+    >
+      <canvas ref={canvasRef} className="block w-full h-full" />
+      
+      {/* --- UI OVERLAYS --- */}
+      
+      {/* 1. Live Stream UI (Top Left) */}
+      <div className="absolute top-6 left-6 w-80 pointer-events-none z-10 flex flex-col gap-4">
+         <div className="bg-black/60 backdrop-blur-md rounded-xl border border-white/10 overflow-hidden flex flex-col shadow-2xl">
+            <div className="bg-red-900/40 p-3 border-b border-white/10 flex items-center justify-between">
+                <span className="text-red-500 font-bold animate-pulse flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-red-500"/> LIVE
+                </span>
+                <span className="text-xs text-gray-400 font-mono">12,402 watching</span>
+            </div>
+            <div className="h-64 overflow-y-auto p-3 flex flex-col gap-2 mask-image-linear-to-b">
+                {comments.map((c) => (
+                    <div key={c.id} className="text-sm animate-[fadeIn_0.3s_ease-out]">
+                        <span className="mr-2 opacity-80">{c.avatar}</span>
+                        <span className="font-bold mr-2 text-shadow-sm" style={{color: c.color}}>{c.user}:</span>
+                        <span className="text-white/80 font-light">{c.text}</span>
                     </div>
-                </div>
-            ))}
-        </div>
-
-        {/* UI Controls */}
-        <div className="absolute bottom-10 left-0 w-full flex flex-col items-center gap-8 z-30 pointer-events-none">
-            
-            <div className="flex gap-3 p-2 bg-neutral-900/80 backdrop-blur-xl rounded-full border border-white/10 shadow-2xl pointer-events-auto">
-                {[
-                    { id: ParticleMode.CHAOS, icon: '💥', label: 'Exploded' },
-                    { id: ParticleMode.BOWLS, icon: '🍜', label: 'Serve' },
-                    { id: ParticleMode.HEART, icon: '❤️', label: 'Love' },
-                    { id: ParticleMode.GIO, icon: '👨‍🏫', label: 'Gio' },
-                    { id: ParticleMode.SHATTER, icon: '⬇️', label: 'Drop' },
-                ].map((m) => (
-                    <button
-                        key={m.id}
-                        onClick={() => switchMode(m.id as ParticleMode)}
-                        className={`
-                            px-4 py-3 rounded-full flex items-center gap-2 transition-all duration-300
-                            ${activeMode === m.id 
-                                ? 'bg-white text-black font-bold scale-110 shadow-[0_0_20px_rgba(255,255,255,0.4)]' 
-                                : 'text-gray-400 hover:bg-white/10 hover:text-white'}
-                        `}
-                    >
-                        <span className="text-xl">{m.icon}</span>
-                        <span className="hidden md:inline text-xs font-bold uppercase tracking-widest">{m.label}</span>
-                    </button>
                 ))}
             </div>
+         </div>
+         
+         <div className="flex justify-start">
+             <div className="bg-gradient-to-r from-pink-600 to-purple-600 text-white px-4 py-1 rounded-full font-bold shadow-lg text-sm flex items-center gap-2">
+                 ❤️ {likes.toLocaleString()}
+             </div>
+         </div>
+      </div>
 
-            <div className="flex gap-6 items-center pointer-events-auto">
-                 <button 
-                    onClick={handleSendGift}
-                    className="group relative bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 text-white px-8 py-3 rounded-2xl font-bold text-lg shadow-[0_0_30px_rgba(236,72,153,0.4)] border border-white/20 transition-all active:scale-95 flex items-center gap-3 overflow-hidden"
-                 >
-                    <span className="text-2xl animate-bounce">🎁</span>
-                    <span className="relative z-10">Send Gift</span>
-                 </button>
+      {/* 2. Shape Switcher (Bottom Center) */}
+      <div className="absolute bottom-10 left-1/2 -translate-x-1/2 pointer-events-auto flex flex-col items-center gap-4 z-20">
+          <div className="text-white/30 font-mono text-xs tracking-[0.5em] uppercase mb-2">
+              Current Mode: <span className="text-yellow-400 font-bold">{mode}</span>
+          </div>
+          
+          <button 
+            onClick={cycleMode}
+            className="group relative px-8 py-3 bg-transparent overflow-hidden rounded-full border border-white/20 transition-all hover:border-yellow-400"
+          >
+              <div className="absolute inset-0 w-0 bg-yellow-400 transition-all duration-[250ms] ease-out group-hover:w-full opacity-10"></div>
+              <span className="relative text-white font-bold tracking-widest group-hover:text-yellow-400 transition-colors">
+                  SWITCH SHAPE ⟳
+              </span>
+          </button>
+      </div>
 
-                 <button 
-                    onClick={onRestart}
-                    className="bg-white/5 hover:bg-white/15 text-white px-8 py-3 rounded-2xl font-bold text-lg border border-white/10 backdrop-blur transition-all active:scale-95 flex items-center gap-2"
-                 >
-                    <span>🔄</span> Play Again
-                 </button>
-            </div>
-        </div>
+      {/* 3. Restart (Bottom Right) */}
+      <div className="absolute bottom-10 right-10 pointer-events-auto z-20">
+          <button 
+            onClick={onRestart}
+            className="bg-white/10 hover:bg-white/20 text-white px-6 py-2 rounded-lg backdrop-blur border border-white/10 transition-all text-sm font-mono tracking-wide"
+          >
+              RESTART SYSTEM
+          </button>
+      </div>
 
-        <div className="absolute top-8 right-8 bg-black/40 backdrop-blur-md px-5 py-2 rounded-full border border-pink-500/30 text-pink-500 font-bold text-xl flex items-center gap-2 z-30 shadow-lg pointer-events-none">
-            <span className="animate-pulse">❤️</span> {likes.toLocaleString()}
-        </div>
-
-        {giftEffect.map(g => (
-            <div 
-                key={g.id}
-                className="absolute top-1/2 left-0 text-8xl animate-bounce pointer-events-none z-50 filter drop-shadow-[0_0_30px_rgba(255,255,255,0.6)]"
-                style={{ 
-                    left: `${g.x}%`, 
-                    marginTop: '-150px',
-                    transform: `rotate(${(Math.random()-0.5)*30}deg)`
-                }}
-            >
-                {g.emoji}
-            </div>
-        ))}
-        
-        {showBowlText && (
-            <div className="absolute top-1/4 w-full text-center pointer-events-none z-20">
-                <h2 className="text-7xl md:text-9xl font-bold text-yellow-400 handwritten drop-shadow-[0_4px_4px_rgba(0,0,0,1)] animate-pulse">
-                    Order Up!
-                </h2>
-                <div className="flex justify-center mt-4">
-                     <span className="bg-red-600 text-white px-4 py-1 rounded text-xl font-bold rotate-[-2deg] shadow-lg">SOLD OUT</span>
-                </div>
-            </div>
-        )}
-
-        {isHandActiveRef.current && (
-             <div 
-                className="absolute w-20 h-20 border-4 border-white/30 rounded-full pointer-events-none z-50 transform -translate-x-1/2 -translate-y-1/2 transition-all duration-75 shadow-[0_0_20px_rgba(255,255,255,0.2)]"
-                style={{ 
-                    left: '50%', 
-                    top: '50%',
-                    transform: `translate(${mousePosRef.current.x + containerRef.current!.clientWidth/2}px, ${-mousePosRef.current.y + containerRef.current!.clientHeight/2}px)`
-                }}
-             />
-        )}
     </div>
-   );
+  );
 };
