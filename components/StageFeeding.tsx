@@ -1,5 +1,7 @@
+
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { FilesetResolver, FaceLandmarker, HandLandmarker } from '@mediapipe/tasks-vision';
+import { audio } from '../utils/audio';
 
 interface StageFeedingProps {
   collectedIngredients: string[];
@@ -42,11 +44,11 @@ interface SprayParticle {
 interface FloatingIngredient {
     id: number;
     emoji: string;
-    x: number;
-    y: number;
-    angle: number;
-    speed: number;
-    radius: number;
+    noodleIndex: number; // Attached to a specific noodle
+    t: number; // Position along curve (0-1)
+    offsetY: number;
+    scale: number;
+    shakePhase: number;
 }
 
 const HAND_CONNECTIONS = HandLandmarker.HAND_CONNECTIONS;
@@ -59,16 +61,21 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
   const [renderTrigger, setRenderTrigger] = useState(0); 
 
   // --- REFS ---
-  const selectedSauceRef = useRef<string | null>(null);
+  const selectedSauceRef = useRef<string>('ketchup'); // Default selection
   const activeColorsRef = useRef<string[]>(['#fcd34d']); // Start with base pasta color
   const isSprayingRef = useRef(false);
+  const isMousePressingRef = useRef(false); // Track mouse state separately
   const mouthOpenRef = useRef(0);
   const monsterSizeRef = useRef(1);
   const feedProgressRef = useRef(0);
   const isCompleteRef = useRef(false);
-  const cursorScreenPosRef = useRef({ x: 0, y: 0 });
+  const squashFactorRef = useRef(0); // For bottle animation
+  
+  // Cursor Tracking
+  const cursorScreenPosRef = useRef({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
   const mousePosRef = useRef({ x: 0, y: 0 }); 
   const currentHandLandmarksRef = useRef<any[] | null>(null);
+  const lastHandTimeRef = useRef(0); // For cursor stability
   
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -177,17 +184,24 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
     noodlesBaseRef.current = bases;
 
     const embedded: FloatingIngredient[] = [];
-    collectedIngredients.forEach((emoji, i) => {
+    const list = collectedIngredients.length > 0 ? collectedIngredients : ['🍅', '🍄', '🌿', '🥩', '🥓', '🍞'];
+    
+    // Create more ingredients for better distribution
+    const totalIngredients = Math.max(list.length * 2, 20);
+    
+    for(let i=0; i<totalIngredients; i++) {
+        const emoji = list[i % list.length];
+        const noodleIdx = Math.floor(Math.random() * count);
         embedded.push({
             id: i,
             emoji: emoji,
-            angle: Math.random() * Math.PI * 2,
-            radius: Math.random() * 60,
-            speed: (Math.random() - 0.5) * 0.02,
-            x: 0,
-            y: 0
+            noodleIndex: noodleIdx,
+            t: 0.1 + Math.random() * 0.8, // Distributed along 10% to 90% of curve
+            offsetY: (Math.random() - 0.5) * 15,
+            scale: 0.7 + Math.random() * 0.5,
+            shakePhase: Math.random() * Math.PI * 2
         });
-    });
+    }
     embeddedIngredientsRef.current = embedded;
 
   }, [collectedIngredients]);
@@ -203,7 +217,7 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
 
     // --- Vision Processing ---
     if (visionReady && videoRef.current && videoRef.current.readyState >= 2) {
-         if (now - lastVisionTimeRef.current > 150) { 
+         if (now - lastVisionTimeRef.current > 60) { // Faster update rate (60ms)
              lastVisionTimeRef.current = now;
              const video = videoRef.current;
              
@@ -212,11 +226,13 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
                  if (result.landmarks && result.landmarks.length > 0) {
                      const hand = result.landmarks[0];
                      currentHandLandmarksRef.current = hand; 
+                     lastHandTimeRef.current = now;
 
                      const px = (1 - hand[9].x) * width;
                      const py = hand[9].y * height;
                      
-                     const lerp = 0.5;
+                     // Smooth Lerp
+                     const lerp = 0.3;
                      cursorScreenPosRef.current.x += (px - cursorScreenPosRef.current.x) * lerp;
                      cursorScreenPosRef.current.y += (py - cursorScreenPosRef.current.y) * lerp;
                      
@@ -228,6 +244,7 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
                      const thumbTip = hand[4];
                      const indexTip = hand[8];
                      const dist = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y);
+                     // Hand pinch overrides
                      isSprayingRef.current = dist < 0.1; 
                  } else {
                      currentHandLandmarksRef.current = null;
@@ -244,7 +261,22 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
              }
          }
     }
+
+    // Logic to merge mouse and hand input state for spraying
+    if (isMousePressingRef.current) {
+        isSprayingRef.current = true;
+    } else if (!currentHandLandmarksRef.current) {
+        // Only reset if hand isn't controlling it
+        isSprayingRef.current = false;
+    }
     
+    // Bottle Squash Animation Logic
+    if (isSprayingRef.current) {
+        squashFactorRef.current += (0.15 - squashFactorRef.current) * 0.2;
+    } else {
+        squashFactorRef.current += (0 - squashFactorRef.current) * 0.2;
+    }
+
     // --- Hover Selection ---
     if (timeRef.current % 5 === 0) {
         const elem = document.elementFromPoint(cursorScreenPosRef.current.x, cursorScreenPosRef.current.y);
@@ -261,8 +293,14 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
     if (isSprayingRef.current && selectedSauceRef.current) {
         const sauce = SAUCES.find(s => s.id === selectedSauceRef.current);
         if (sauce) {
+            // FIXED: Nozzle is fixed at bottom center (tip of the bottle)
             const nozzleX = width / 2;
-            const nozzleY = height - 100;
+            const nozzleY = height - 165 + (squashFactorRef.current * 20); // Move with squash
+            
+            // Trigger SFX periodically while spraying
+            if (timeRef.current % 12 === 0) { // Slightly slower trigger
+               audio.playSFX('spray');
+            }
 
             for(let k=0; k<2; k++) { 
                 sprayParticlesRef.current.push({
@@ -279,11 +317,9 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
 
             // More aggressive color history capture (Every 3 frames)
             if (timeRef.current % 3 === 0) {
-                // Keep the color history manageable but allow mixing
                 if (activeColorsRef.current.length < 80) {
                     activeColorsRef.current.push(sauce.color);
                 } else {
-                    // Replace a random existing color to keep it evolving
                     activeColorsRef.current[Math.floor(Math.random() * activeColorsRef.current.length)] = sauce.color;
                 }
             }
@@ -322,12 +358,6 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
         }
     }
 
-    embeddedIngredientsRef.current.forEach(ing => {
-        ing.angle += ing.speed;
-        ing.x = Math.cos(ing.angle) * ing.radius;
-        ing.y = Math.sin(ing.angle) * ing.radius;
-    });
-
     setRenderTrigger(t => t + 1);
     requestRef.current = requestAnimationFrame(animate);
   }, [visionReady, onComplete, dimensions]);
@@ -338,7 +368,10 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
   }, [animate]);
 
   const handleMouseMove = (e: React.MouseEvent) => {
-      if (currentHandLandmarksRef.current) return;
+      // Input Source Locking:
+      // If hand was detected recently (< 500ms ago), ignore mouse to prevent jitter
+      const now = performance.now();
+      if (now - lastHandTimeRef.current < 500) return;
 
       const rect = containerRef.current?.getBoundingClientRect();
       if (rect) {
@@ -351,8 +384,19 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
       }
   };
 
-  const handleMouseDown = () => { isSprayingRef.current = true; };
-  const handleMouseUp = () => { isSprayingRef.current = false; };
+  const handleMouseDown = () => { isMousePressingRef.current = true; };
+  const handleMouseUp = () => { isMousePressingRef.current = false; };
+
+  // Calculate Bezier Point
+  const getBezierPoint = (t: number, p0: any, cp1: any, cp2: any, p3: any) => {
+      const mt = 1-t;
+      const mt2 = mt*mt;
+      const t2 = t*t;
+      return {
+          x: mt2*mt*p0.x + 3*mt2*t*cp1.x + 3*mt*t2*cp2.x + t2*t*p3.x,
+          y: mt2*mt*p0.y + 3*mt2*t*cp1.y + 3*mt*t2*cp2.y + t2*t*p3.y
+      };
+  };
 
   const renderNoodle3D = (base: NoodleBase, i: number) => {
       const t = timeRef.current * base.speed + base.phase;
@@ -366,10 +410,12 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
       const colorIndex = (i + base.colorOffset) % activeColorsRef.current.length;
       const baseColor = activeColorsRef.current[colorIndex];
 
-      const pathD = `M ${base.start.x + wiggleX + mx} ${base.start.y + wiggleY + my} 
-                     C ${base.cp1.x + wiggleX} ${base.cp1.y + wiggleY}, 
-                       ${base.cp2.x - wiggleX} ${base.cp2.y - wiggleY}, 
-                       ${base.end.x - wiggleX + mx} ${base.end.y - wiggleY + my}`;
+      const p0 = { x: base.start.x + wiggleX + mx, y: base.start.y + wiggleY + my };
+      const cp1 = { x: base.cp1.x + wiggleX, y: base.cp1.y + wiggleY };
+      const cp2 = { x: base.cp2.x - wiggleX, y: base.cp2.y - wiggleY };
+      const p3 = { x: base.end.x - wiggleX + mx, y: base.end.y - wiggleY + my };
+
+      const pathD = `M ${p0.x} ${p0.y} C ${cp1.x} ${cp1.y}, ${cp2.x} ${cp2.y}, ${p3.x} ${p3.y}`;
 
       return (
           <g key={base.id}>
@@ -398,59 +444,89 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
                 transform="translate(-1, -2)"
                 style={{ mixBlendMode: 'screen' }}
             />
+            
+            {/* Embedded Ingredients Logic */}
+            {embeddedIngredientsRef.current
+                .filter(ing => ing.noodleIndex === i)
+                .map(ing => {
+                    const pos = getBezierPoint(ing.t, p0, cp1, cp2, p3);
+                    
+                    // Independent shake
+                    const shakeX = Math.sin(timeRef.current * 0.5 + ing.shakePhase) * 3;
+                    const shakeY = Math.cos(timeRef.current * 0.6 + ing.shakePhase) * 3;
+
+                    return (
+                        <text
+                            key={`ing-${ing.id}`}
+                            x={pos.x + shakeX}
+                            y={pos.y + ing.offsetY + shakeY}
+                            fontSize={20 * ing.scale}
+                            textAnchor="middle"
+                            dominantBaseline="middle"
+                            transform={`rotate(${Math.sin(t + ing.id)*20}, ${pos.x}, ${pos.y})`}
+                            style={{ filter: 'drop-shadow(0 2px 2px rgba(0,0,0,0.5))', pointerEvents: 'none' }}
+                        >
+                            {ing.emoji}
+                        </text>
+                    );
+                })
+            }
           </g>
       );
   };
 
-  const currentSauceId = selectedSauceRef.current;
   const centerX = dimensions.width / 2;
   const centerY = dimensions.height / 2;
   const monsterY = centerY - 50; 
+  const currentSauce = SAUCES.find(s => s.id === selectedSauceRef.current) || SAUCES[0];
 
-  const renderSkeleton = () => {
+  // --- RENDER CURSOR ---
+  const renderCursor = () => {
+    // FIX: Always render cursor regardless of hand presence
+    const x = cursorScreenPosRef.current.x;
+    const y = cursorScreenPosRef.current.y;
+    const isGrab = isSprayingRef.current;
+    
+    // Hand Skeleton Overlay (Only if detected)
     const hand = currentHandLandmarksRef.current;
-    if (!hand) return null;
-
-    const centerNode = hand[9];
+    
+    // Scale factor for drawing skeleton relative to cursor center
     const scaleFactor = 50; 
+    let skeletonLines = null;
+    let skeletonJoints = null;
 
-    const getDrawX = (val: number) => {
-        const diff = (1 - val) - (1 - centerNode.x);
-        return cursorScreenPosRef.current.x + diff * scaleFactor * 3;
-    };
-    const getDrawY = (val: number) => {
-        const diff = val - centerNode.y;
-        return cursorScreenPosRef.current.y + diff * scaleFactor * 3;
-    };
+    if (hand) {
+        const centerNode = hand[9];
+        const getDrawX = (val: number) => x + ((1-val) - (1-centerNode.x)) * scaleFactor * 3;
+        const getDrawY = (val: number) => y + (val - centerNode.y) * scaleFactor * 3;
+        const color = isGrab ? '#ef4444' : '#fbbf24';
 
-    const color = isSprayingRef.current ? '#ef4444' : '#fbbf24';
+        skeletonLines = HAND_CONNECTIONS.map((conn, idx) => (
+            <line 
+                key={idx}
+                x1={getDrawX(hand[conn.start].x)} y1={getDrawY(hand[conn.start].y)}
+                x2={getDrawX(hand[conn.end].x)} y2={getDrawY(hand[conn.end].y)}
+                stroke={color} strokeWidth="3" strokeLinecap="round" opacity="0.6"
+            />
+        ));
+        skeletonJoints = hand.map((lm: any, idx: number) => (
+             <circle key={idx} cx={getDrawX(lm.x)} cy={getDrawY(lm.y)} r="3" fill={color} opacity="0.8" />
+        ));
+    }
 
     return (
-        <g>
-            <text x={cursorScreenPosRef.current.x + 10} y={cursorScreenPosRef.current.y - 30} fontSize="30">👨‍🍳</text>
+        <g style={{ pointerEvents: 'none' }}>
+             {/* Skeleton Layer */}
+             {skeletonLines}
+             {skeletonJoints}
 
-            {HAND_CONNECTIONS.map((conn, idx) => {
-                const start = hand[conn.start];
-                const end = hand[conn.end];
-                return (
-                    <line 
-                        key={idx}
-                        x1={getDrawX(start.x)} y1={getDrawY(start.y)}
-                        x2={getDrawX(end.x)} y2={getDrawY(end.y)}
-                        stroke={color}
-                        strokeWidth="3"
-                        strokeLinecap="round"
-                    />
-                );
-            })}
-            {hand.map((lm: any, idx: number) => (
-                <circle 
-                    key={idx}
-                    cx={getDrawX(lm.x)} cy={getDrawY(lm.y)}
-                    r="4"
-                    fill={color}
-                />
-            ))}
+             {/* Emoji Layer - Always Visible */}
+             <g transform={`translate(${x}, ${y})`}>
+                 <text y="-40" fontSize="40" textAnchor="middle" style={{filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.5))'}}>👨‍🍳</text>
+                 <text y="10" fontSize="40" textAnchor="middle" style={{filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.5))'}}>
+                     {isGrab ? '✊' : '✋'}
+                 </text>
+             </g>
         </g>
     );
   };
@@ -471,15 +547,6 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
                   <stop offset="60%" stopColor="#450a0a" />
                   <stop offset="100%" stopColor="#7f1d1d" />
               </radialGradient>
-              <radialGradient id="gradSkin" cx="40%" cy="40%" r="60%">
-                  <stop offset="0%" stopColor="#fef3c7" /> 
-                  <stop offset="100%" stopColor="#d97706" />
-              </radialGradient>
-              <linearGradient id="gradMetal" x1="0" y1="0" x2="1" y2="0">
-                  <stop offset="0%" stopColor="#94a3b8" />
-                  <stop offset="50%" stopColor="#e2e8f0" />
-                  <stop offset="100%" stopColor="#94a3b8" />
-              </linearGradient>
               <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
                 <feGaussianBlur in="SourceAlpha" stdDeviation="4"/>
                 <feOffset dx="2" dy="4" result="offsetblur"/>
@@ -518,57 +585,21 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
                   style={{ width: `${feedProgressRef.current}%` }}
                 />
              </div>
-
-             {!visionReady && !visionError && (
-                <div className="bg-yellow-600/80 text-white px-4 py-1 rounded-full text-xs font-mono animate-pulse font-bold shadow-lg">
-                    INITIALIZING VISION AI...
-                </div>
-             )}
           </div>
       </div>
 
       <svg className="absolute inset-0 w-full h-full pointer-events-none" xmlns="http://www.w3.org/2000/svg">
+        {/* PARTICLES LAYER */}
         <g>
             {sprayParticlesRef.current.map(p => (
                 <circle key={p.id} cx={p.x} cy={p.y} r={p.size} fill={p.color} opacity={0.9} />
             ))}
         </g>
 
+        {/* MONSTER LAYER */}
         <g transform={`translate(${centerX}, ${monsterY}) scale(${monsterSizeRef.current})`}>
-             
-             <g opacity={0.6}>
-                {embeddedIngredientsRef.current.slice(0, embeddedIngredientsRef.current.length / 2).map((ing) => (
-                    <text 
-                        key={ing.id} 
-                        x={ing.x} y={ing.y} 
-                        fontSize={30} 
-                        textAnchor="middle" 
-                        dominantBaseline="central"
-                        transform={`rotate(${Math.sin(timeRef.current * 0.05 + ing.id) * 20})`}
-                    >
-                        {ing.emoji}
-                    </text>
-                ))}
-             </g>
-
              <g filter="url(#softShadow)"> 
                 {noodlesBaseRef.current.map((n, i) => renderNoodle3D(n, i))}
-             </g>
-
-             <g opacity={0.9}>
-                {embeddedIngredientsRef.current.slice(embeddedIngredientsRef.current.length / 2).map((ing) => (
-                    <text 
-                        key={ing.id} 
-                        x={ing.x} y={ing.y} 
-                        fontSize={32} 
-                        textAnchor="middle" 
-                        dominantBaseline="central"
-                        transform={`rotate(${Math.sin(timeRef.current * 0.05 + ing.id) * 20})`}
-                        style={{ filter: 'drop-shadow(0px 2px 2px rgba(0,0,0,0.5))' }}
-                    >
-                        {ing.emoji}
-                    </text>
-                ))}
              </g>
 
              <g transform="translate(0, 20) scale(0.7)">
@@ -589,7 +620,6 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
                    <circle r="32" fill="white" />
                    <circle cx={mousePosRef.current.x * 12} cy={-mousePosRef.current.y * 12} r={14 + (isSprayingRef.current ? 4 : 0)} fill="#1e293b" />
                    <circle cx={mousePosRef.current.x * 12 - 6} cy={-mousePosRef.current.y * 12 - 6} r="5" fill="white" opacity="0.9" />
-                   <circle cx={mousePosRef.current.x * 12 + 8} cy={-mousePosRef.current.y * 12 + 6} r="2" fill="white" opacity="0.6" />
                    
                    <path 
                      d={`M -35 ${-40 - mouthOpenRef.current*20} Q 0 ${-50 + mousePosRef.current.y*20} 35 ${-40 - mouthOpenRef.current*20}`} 
@@ -607,7 +637,6 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
                    <circle r="32" fill="white" />
                    <circle cx={mousePosRef.current.x * 12} cy={-mousePosRef.current.y * 12} r={14 + (isSprayingRef.current ? 4 : 0)} fill="#1e293b" />
                    <circle cx={mousePosRef.current.x * 12 - 6} cy={-mousePosRef.current.y * 12 - 6} r="5" fill="white" opacity="0.9" />
-                   <circle cx={mousePosRef.current.x * 12 + 8} cy={-mousePosRef.current.y * 12 + 6} r="2" fill="white" opacity="0.6" />
 
                    <path 
                      d={`M -35 ${-40 - mouthOpenRef.current*20} Q 0 ${-50 - mousePosRef.current.y*20} 35 ${-40 - mouthOpenRef.current*20}`} 
@@ -623,100 +652,96 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
              </g>
         </g>
         
-        <g transform={`translate(${centerX}, ${dimensions.height - 60})`}>
-            <path d="M -40 60 L -25 -20 L 25 -20 L 40 60 Z" fill="url(#gradMetal)" stroke="#475569" strokeWidth="2" />
-            <path d="M -32 20 L 32 20" stroke="rgba(0,0,0,0.2)" strokeWidth="4" />
-            <path d="M -25 -20 L -20 -30 L 20 -30 L 25 -20 Z" fill="#1e293b" />
-            
-            {isSprayingRef.current && (
-                 <ellipse cx="0" cy="-35" rx="15" ry="5" fill="white" opacity="0.5" filter="blur(4px)" />
-            )}
+        {/* UI & CONTROLS LAYER */}
+        <g>
+             {/* BOTTLE VISUAL */}
+             <g transform={`translate(${centerX}, ${dimensions.height})`}>
+                 <g transform={`translate(0, -20) scale(${1 + squashFactorRef.current * 0.1}, ${1 - squashFactorRef.current * 0.15})`}>
+                    {/* Bottle Shadow */}
+                    <ellipse cx="0" cy="10" rx="40" ry="10" fill="rgba(0,0,0,0.5)" />
+                    
+                    {/* Bottle Body */}
+                    <path 
+                        d="M -30 -120 C -35 -80 -40 -40 -35 0 L 35 0 C 40 -40 35 -80 30 -120 Q 15 -145 0 -145 Q -15 -145 -30 -120"
+                        fill={currentSauce.color}
+                        stroke="rgba(255,255,255,0.2)" strokeWidth="2"
+                    />
+                    
+                    {/* Glossy Highlights */}
+                    <path d="M -20 -110 Q -25 -60 -20 -20" stroke="rgba(255,255,255,0.5)" strokeWidth="5" fill="none" strokeLinecap="round" />
+                    <path d="M 15 -120 Q 20 -80 15 -40" stroke="rgba(255,255,255,0.2)" strokeWidth="3" fill="none" strokeLinecap="round" />
+
+                    {/* Label Area */}
+                    <g transform="translate(0, -60)">
+                        <rect x="-28" y="-20" width="56" height="40" fill="white" rx="4" opacity="0.95" />
+                        <text x="0" y="5" textAnchor="middle" fontSize="12" fontWeight="bold" fontFamily="sans-serif" fill="#333">
+                            {currentSauce.label}
+                        </text>
+                        <rect x="-28" y="-20" width="56" height="5" fill={currentSauce.darkColor} />
+                        <rect x="-28" y="15" width="56" height="5" fill={currentSauce.darkColor} />
+                    </g>
+
+                    {/* Cap and Nozzle */}
+                    <rect x="-18" y="-145" width="36" height="20" fill="#262626" rx="3" />
+                    <rect x="-18" y="-130" width="36" height="2" fill="#404040" />
+                    <path d="M -6 -145 L -4 -160 L 4 -160 L 6 -145 Z" fill="#262626" />
+                 </g>
+             </g>
+
+             {/* SAUCE BUTTONS (Side Columns) */}
+             <g transform={`translate(${centerX}, ${dimensions.height - 100})`}>
+                 {/* Left Column */}
+                 <g transform="translate(-100, -30)">
+                    {SAUCES.slice(0, 3).map((s, i) => {
+                        const isSelected = selectedSauceRef.current === s.id;
+                        return (
+                            <foreignObject key={s.id} x="-28" y={i * 70 - 70} width="56" height="56" style={{overflow:'visible'}}>
+                                <button
+                                    data-sauce-id={s.id}
+                                    className={`w-14 h-14 rounded-full border-2 shadow-lg transition-all duration-200 pointer-events-auto flex items-center justify-center
+                                        ${isSelected ? 'scale-125 ring-4 ring-white z-10' : 'scale-100 opacity-90 hover:scale-110'}
+                                    `}
+                                    style={{ 
+                                        backgroundColor: s.color,
+                                        borderColor: s.lightColor,
+                                        boxShadow: isSelected ? `0 0 20px ${s.color}` : '0 4px 6px rgba(0,0,0,0.4)'
+                                    }}
+                                >
+                                    {isSelected && <div className="w-2 h-2 bg-white rounded-full animate-ping" />}
+                                </button>
+                            </foreignObject>
+                        );
+                    })}
+                 </g>
+
+                 {/* Right Column */}
+                 <g transform="translate(100, -30)">
+                    {SAUCES.slice(3, 6).map((s, i) => {
+                        const isSelected = selectedSauceRef.current === s.id;
+                        return (
+                             <foreignObject key={s.id} x="-28" y={i * 70 - 70} width="56" height="56" style={{overflow:'visible'}}>
+                                <button
+                                    data-sauce-id={s.id}
+                                    className={`w-14 h-14 rounded-full border-2 shadow-lg transition-all duration-200 pointer-events-auto flex items-center justify-center
+                                        ${isSelected ? 'scale-125 ring-4 ring-white z-10' : 'scale-100 opacity-90 hover:scale-110'}
+                                    `}
+                                    style={{ 
+                                        backgroundColor: s.color,
+                                        borderColor: s.lightColor,
+                                        boxShadow: isSelected ? `0 0 20px ${s.color}` : '0 4px 6px rgba(0,0,0,0.4)'
+                                    }}
+                                >
+                                    {isSelected && <div className="w-2 h-2 bg-white rounded-full animate-ping" />}
+                                </button>
+                            </foreignObject>
+                        );
+                    })}
+                 </g>
+             </g>
         </g>
-
-        {renderSkeleton()}
-
+        
+        {renderCursor()}
       </svg>
-
-      <div className="absolute bottom-6 left-0 w-full flex justify-center items-end pointer-events-none gap-24 md:gap-40 z-30">
-         <div className="flex gap-3 md:gap-5 pointer-events-auto">
-             {SAUCES.slice(0, 3).map((sauce) => (
-                 <button
-                    key={sauce.id}
-                    data-sauce-id={sauce.id}
-                    onClick={() => {selectedSauceRef.current = sauce.id; setRenderTrigger(t=>t+1)}}
-                    className={`
-                        relative w-20 h-24 md:w-28 md:h-32 rounded-3xl border-b-4 border-r-2 shadow-xl transition-all duration-200 ease-out
-                        ${currentSauceId === sauce.id 
-                            ? 'transform -translate-y-2 scale-110 ring-4 ring-white/80 z-10' 
-                            : 'hover:scale-105 hover:-translate-y-1 opacity-90 hover:opacity-100'}
-                    `}
-                    style={{ 
-                        backgroundColor: sauce.lightColor, 
-                        borderColor: sauce.darkColor,
-                        color: sauce.darkColor
-                    }}
-                 >
-                    <div className="absolute inset-0 flex flex-col items-center justify-center p-2">
-                        <div 
-                            className="w-8 h-8 md:w-10 md:h-10 rounded-full mb-1 border-2 border-black/5 shadow-inner" 
-                            style={{backgroundColor: sauce.color}} 
-                        />
-                        <span className="font-bold text-[10px] md:text-xs handwritten uppercase tracking-widest">{sauce.label}</span>
-                    </div>
-                 </button>
-             ))}
-         </div>
-         
-         <div className="flex gap-3 md:gap-5 pointer-events-auto">
-             {SAUCES.slice(3, 6).map((sauce) => (
-                 <button
-                    key={sauce.id}
-                    data-sauce-id={sauce.id}
-                    onClick={() => {selectedSauceRef.current = sauce.id; setRenderTrigger(t=>t+1)}}
-                    className={`
-                        relative w-20 h-24 md:w-28 md:h-32 rounded-3xl border-b-4 border-r-2 shadow-xl transition-all duration-200 ease-out
-                        ${currentSauceId === sauce.id 
-                            ? 'transform -translate-y-2 scale-110 ring-4 ring-white/80 z-10' 
-                            : 'hover:scale-105 hover:-translate-y-1 opacity-90 hover:opacity-100'}
-                    `}
-                    style={{ 
-                        backgroundColor: sauce.lightColor, 
-                        borderColor: sauce.darkColor,
-                        color: sauce.darkColor
-                    }}
-                 >
-                    <div className="absolute inset-0 flex flex-col items-center justify-center p-2">
-                        <div 
-                            className="w-8 h-8 md:w-10 md:h-10 rounded-full mb-1 border-2 border-black/5 shadow-inner" 
-                            style={{backgroundColor: sauce.color}} 
-                        />
-                        <span className="font-bold text-[10px] md:text-xs handwritten uppercase tracking-widest">{sauce.label}</span>
-                    </div>
-                 </button>
-             ))}
-         </div>
-      </div>
-      
-      {!currentHandLandmarksRef.current && (
-        <div 
-            className="fixed z-50 pointer-events-none transition-transform duration-75 ease-out"
-            style={{
-                left: 0,
-                top: 0,
-                transform: `translate(${cursorScreenPosRef.current.x}px, ${cursorScreenPosRef.current.y}px)`,
-            }}
-        >
-            <div className="relative text-3xl">
-                <span className="absolute -translate-x-1/2 -translate-y-1/2 text-4xl">
-                    {isSprayingRef.current ? '✊' : '✋'}
-                </span>
-                <span className="absolute -translate-x-1/2 -translate-y-[150%] text-2xl animate-bounce">
-                    👨‍🍳
-                </span>
-            </div>
-        </div>
-      )}
-
     </div>
   );
 };

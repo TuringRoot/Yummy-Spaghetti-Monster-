@@ -1,4 +1,6 @@
+
 import React, { useEffect } from 'react';
+import { audio } from '../utils/audio';
 
 interface StageIntroProps {
   onStart: () => void;
@@ -6,8 +8,16 @@ interface StageIntroProps {
 
 export const StageIntro: React.FC<StageIntroProps> = ({ onStart }) => {
   useEffect(() => {
+    // Try to init audio early if user clicked document before
+    const handleInteraction = () => audio.init();
+    window.addEventListener('click', handleInteraction);
+    return () => window.removeEventListener('click', handleInteraction);
+  }, []);
+
+  useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.code === 'Space') {
+        audio.init(); // Ensure audio context is ready
         onStart();
       }
     };

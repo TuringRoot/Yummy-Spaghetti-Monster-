@@ -1,6 +1,8 @@
+
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { BAD_INGREDIENTS, GOOD_INGREDIENTS, Ingredient, IngredientType } from '../types';
 import { FilesetResolver, HandLandmarker, DrawingUtils } from '@mediapipe/tasks-vision';
+import { audio } from '../utils/audio';
 
 interface StageCookingProps {
   onComplete: (collected: string[]) => void;
@@ -783,6 +785,7 @@ export const StageCooking: React.FC<StageCookingProps> = ({ onComplete, videoStr
             ingredientsRef.current.splice(i, 1);
 
             if (ing.type === IngredientType.GOOD) {
+                audio.playSFX('catch'); // SFX
                 scoreRef.current += 1;
                 setScore(scoreRef.current);
                 collectedRef.current.push(ing.emoji);
@@ -790,6 +793,7 @@ export const StageCooking: React.FC<StageCookingProps> = ({ onComplete, videoStr
                 spawnTextFeedback(ing.x, potY, "Yummy!", "#fcd34d");
                 if (scoreRef.current >= 10) onComplete(collectedRef.current);
             } else {
+                audio.playSFX('miss'); // SFX
                 spawnTextFeedback(ing.x, potY, "YUCK!", "#ef4444");
                 shakeRef.current = 25;
                 potFireTimerRef.current = 40;

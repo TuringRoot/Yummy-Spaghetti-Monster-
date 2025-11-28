@@ -2,9 +2,10 @@ import React, { useEffect, useRef } from 'react';
 
 interface WebcamBackgroundProps {
   stream: MediaStream | null;
+  visible?: boolean;
 }
 
-export const WebcamBackground: React.FC<WebcamBackgroundProps> = ({ stream }) => {
+export const WebcamBackground: React.FC<WebcamBackgroundProps> = ({ stream, visible = true }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
@@ -14,7 +15,7 @@ export const WebcamBackground: React.FC<WebcamBackgroundProps> = ({ stream }) =>
   }, [stream]);
 
   return (
-    <div className="fixed top-4 right-4 z-50 flex flex-col items-center pointer-events-none">
+    <div className={`fixed top-4 right-4 z-50 flex flex-col items-center pointer-events-none transition-opacity duration-500 ${visible ? 'opacity-100' : 'opacity-0'}`}>
       <div className="w-28 h-28 rounded-full overflow-hidden border-4 border-yellow-500 shadow-[0_0_20px_rgba(234,179,8,0.4)] bg-black relative">
         <video
           ref={videoRef}
