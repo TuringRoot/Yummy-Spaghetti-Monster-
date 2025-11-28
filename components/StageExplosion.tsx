@@ -1,57 +1,57 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 
 interface StageExplosionProps {
   onComplete: () => void;
 }
 
 export const StageExplosion: React.FC<StageExplosionProps> = ({ onComplete }) => {
-  const [scale, setScale] = useState(1);
-  const [shake, setShake] = useState(0);
-  const [whiteout, setWhiteout] = useState(0);
+  const [progress, setProgress] = useState(0); // 0 to 1
+  const requestRef = useRef(0);
 
   useEffect(() => {
-    // Animation sequence
     let frame = 0;
+    const duration = 140; // Total frames
+
     const animate = () => {
       frame++;
-      
-      // Exponential scale: Start slow, end fast
-      const newScale = 0.8 + Math.pow(frame, 3.2) * 0.00005; 
-      setScale(newScale);
+      const p = Math.min(frame / duration, 1);
+      setProgress(p);
 
-      // Increasing shake intensity
-      setShake(Math.min(frame * 0.8, 60));
-
-      // Whiteout at the end
-      if (frame > 100) { 
-         setWhiteout((frame - 100) / 40);
-      }
-
-      if (frame > 140) {
+      if (frame > duration) {
           onComplete();
       } else {
-          requestAnimationFrame(animate);
+          requestRef.current = requestAnimationFrame(animate);
       }
     };
     
-    const id = requestAnimationFrame(animate);
-    return () => cancelAnimationFrame(id);
+    requestRef.current = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(requestRef.current);
   }, [onComplete]);
 
-  // Shake offsets
-  const sx = (Math.random() - 0.5) * shake;
-  const sy = (Math.random() - 0.5) * shake;
+  // Derived Animation Values
+  // Exponential scale for "pop" effect
+  const scale = 0.8 + Math.pow(progress, 4) * 5.0; 
+  
+  // Shake intensity increases with progress
+  const shakeIntensity = Math.pow(progress, 2) * 50;
+  const sx = (Math.random() - 0.5) * shakeIntensity;
+  const sy = (Math.random() - 0.5) * shakeIntensity;
+
+  // Mouth opening (0 = normal, 1 = huge)
+  const mouthOpen = 0.2 + Math.pow(progress, 2) * 2.5; 
+  
+  // Whiteout starts at 80% progress
+  const whiteout = progress > 0.8 ? (progress - 0.8) * 5 : 0;
 
   return (
     <div className="w-full h-full bg-[#1c1917] flex items-center justify-center overflow-hidden relative">
       
-      {/* SVG Container matching the aspect of StageFeeding */}
       <svg 
         viewBox="0 0 800 600" 
         className="w-full h-full absolute transition-transform duration-75 will-change-transform"
         style={{
-            transform: `scale(${scale}) translate(${sx}px, ${sy}px)`,
-            filter: `blur(${whiteout * 20}px)`
+            transform: `translate(${sx}px, ${sy}px) scale(${scale})`,
+            filter: `blur(${whiteout * 10}px)`
         }}
       >
         <defs>
@@ -59,61 +59,71 @@ export const StageExplosion: React.FC<StageExplosionProps> = ({ onComplete }) =>
                   <stop offset="60%" stopColor="#450a0a" />
                   <stop offset="100%" stopColor="#7f1d1d" />
               </radialGradient>
+              {/* Dynamic Clip Path for Teeth/Mouth */}
               <clipPath id="mouthClipExplode">
-                 <ellipse cx="0" cy="20" rx="100" ry="140" />
+                 <ellipse cx="0" cy="20" rx={100 + mouthOpen * 20} ry={100 + mouthOpen * 100} />
               </clipPath>
         </defs>
 
         <g transform="translate(400, 300)">
-             {/* Throat/Mouth Depth - Wide Open for explosion */}
-             <ellipse 
-                cx="0" cy="20" 
-                rx="100" ry="140" 
+             {/* Dynamic Mouth Shape */}
+             <path 
+                d={`
+                  M -90 ${-20 - mouthOpen * 10} 
+                  Q 0 ${160 + mouthOpen * 200} 90 ${-20 - mouthOpen * 10} 
+                  Q 60 ${-60 - mouthOpen * 50} 0 ${-60 - mouthOpen * 50} 
+                  Q -60 ${-60 - mouthOpen * 50} -90 ${-20 - mouthOpen * 10}
+                `}
                 fill="url(#gradMouthExplode)" stroke="#3f0808" strokeWidth="4" 
              />
              
-             {/* Teeth - Upper */}
+             {/* Teeth - Moving apart as mouth opens */}
              <g clipPath="url(#mouthClipExplode)">
-                 <path 
-                     d="M -60 -40 Q 0 -10 60 -40" 
-                     fill="#f3f4f6" stroke="#d1d5db" strokeWidth="2"
-                 />
+                 <g transform={`translate(0, ${-mouthOpen * 40})`}>
+                    <path d="M -70 -20 L -50 40 L -30 -20" fill="#f3f4f6" stroke="#d1d5db" />
+                    <path d="M 70 -20 L 50 40 L 30 -20" fill="#f3f4f6" stroke="#d1d5db" />
+                    <path d="M -20 -30 L 0 30 L 20 -30" fill="#f3f4f6" stroke="#d1d5db" />
+                 </g>
              </g>
 
-             {/* Eyes - Wide Open in Shock */}
-             {/* Left Eye */}
-             <g transform="translate(-70, -80)">
-                <circle r="40" fill="white" />
-                {/* Dilated Pupil */}
-                <circle cx="0" cy="0" r="12" fill="#1e293b" />
-                <circle cx="-5" cy="-5" r="5" fill="white" opacity="0.8" />
-                
-                {/* Eyebrow - Angled up */}
-                <path 
-                  d="M -40 -50 Q 0 -70 40 -50" 
-                  stroke="#000" strokeWidth="8" fill="none" strokeLinecap="round"
-                  transform="rotate(-20)"
-                />
-             </g>
+             {/* Eyes - Expanding and Shaking */}
+             <g transform={`translate(0, ${-mouthOpen * 30})`}> {/* Eyes move up slightly as mouth opens */}
+                 
+                 {/* Left Eye */}
+                 <g transform="translate(-90, -100)">
+                    <circle r={40 + progress * 10} fill="white" />
+                    {/* Iris shrinks in shock */}
+                    <circle cx={(Math.random()-0.5)*5} cy={(Math.random()-0.5)*5} r={14 - progress * 8} fill="#1e293b" />
+                    
+                    {/* Eyebrow - Angry to Shocked transition */}
+                    <path 
+                      d={`M -50 ${-40 - progress*40} L 40 ${10 - progress*50}`} 
+                      stroke="#000" strokeWidth="12" strokeLinecap="round"
+                    />
+                 </g>
 
-             {/* Right Eye */}
-             <g transform="translate(70, -80)">
-                <circle r="40" fill="white" />
-                {/* Dilated Pupil */}
-                <circle cx="0" cy="0" r="12" fill="#1e293b" />
-                <circle cx="-5" cy="-5" r="5" fill="white" opacity="0.8" />
+                 {/* Right Eye */}
+                 <g transform="translate(90, -100)">
+                    <circle r={40 + progress * 10} fill="white" />
+                    {/* Iris */}
+                    <circle cx={(Math.random()-0.5)*5} cy={(Math.random()-0.5)*5} r={14 - progress * 8} fill="#1e293b" />
 
-                {/* Eyebrow - Angled up */}
-                <path 
-                  d="M -40 -50 Q 0 -70 40 -50" 
-                  stroke="#000" strokeWidth="8" fill="none" strokeLinecap="round"
-                  transform="rotate(20)"
-                />
+                    {/* Eyebrow */}
+                    <path 
+                      d={`M 50 ${-40 - progress*40} L -40 ${10 - progress*50}`} 
+                      stroke="#000" strokeWidth="12" strokeLinecap="round"
+                    />
+                 </g>
              </g>
              
-             {/* Sweat drops / Stress lines */}
-             <path d="M -130 -100 L -150 -120" stroke="rgba(255,255,255,0.5)" strokeWidth="4" />
-             <path d="M 130 -100 L 150 -120" stroke="rgba(255,255,255,0.5)" strokeWidth="4" />
+             {/* Stress Marks - Fading in */}
+             <g opacity={progress}>
+                <path d="M -180 -120 L -220 -160" stroke="#ef4444" strokeWidth="8" strokeLinecap="round" />
+                <path d="M -200 -100 L -240 -120" stroke="#ef4444" strokeWidth="8" strokeLinecap="round" />
+                
+                <path d="M 180 -120 L 220 -160" stroke="#ef4444" strokeWidth="8" strokeLinecap="round" />
+                <path d="M 200 -100 L 240 -120" stroke="#ef4444" strokeWidth="8" strokeLinecap="round" />
+             </g>
         </g>
       </svg>
 

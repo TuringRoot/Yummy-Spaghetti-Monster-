@@ -49,7 +49,6 @@ interface FloatingIngredient {
     radius: number;
 }
 
-// Helper to draw skeleton
 const HAND_CONNECTIONS = HandLandmarker.HAND_CONNECTIONS;
 
 export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients, onComplete, videoStream }) => {
@@ -152,20 +151,15 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
 
   // 3. Initialize Noodles & Embedded Ingredients
   useEffect(() => {
-    // A. Noodles (Thinner, Longer, More Dense, SMALLER VOLUME)
     const count = 180; 
     const bases: NoodleBase[] = [];
-    const radius = 90; // Reduced from 140 to make it smaller volume
+    const radius = 90; 
 
     for (let i = 0; i < count; i++) {
-        // Distribute randomly but clustered
         const angle = Math.random() * Math.PI * 2;
         const r = Math.random() * radius * 0.95;
-        
         const cx = Math.cos(angle) * r;
         const cy = Math.sin(angle) * r;
-
-        // Make Control Points even further away for more twist and length
         const spread = 400;
 
         bases.push({
@@ -174,7 +168,7 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
             end: {x: cx + (Math.random()-0.5)*50, y: cy + (Math.random()-0.5)*50},
             cp1: {x: cx + (Math.random()-0.5)*spread, y: cy + (Math.random()-0.5)*spread},
             cp2: {x: cx + (Math.random()-0.5)*spread, y: cy + (Math.random()-0.5)*spread},
-            width: 3 + Math.random() * 3, // Thinner: 3-6px
+            width: 3 + Math.random() * 3, 
             phase: Math.random() * Math.PI * 2,
             speed: 0.01 + Math.random() * 0.02,
             colorOffset: Math.floor(Math.random() * 10)
@@ -182,14 +176,13 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
     }
     noodlesBaseRef.current = bases;
 
-    // B. Embedded Ingredients
     const embedded: FloatingIngredient[] = [];
     collectedIngredients.forEach((emoji, i) => {
         embedded.push({
             id: i,
             emoji: emoji,
             angle: Math.random() * Math.PI * 2,
-            radius: Math.random() * 60, // Tighter radius
+            radius: Math.random() * 60,
             speed: (Math.random() - 0.5) * 0.02,
             x: 0,
             y: 0
@@ -218,7 +211,7 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
                  const result = handLandmarkerRef.current.detectForVideo(video, now);
                  if (result.landmarks && result.landmarks.length > 0) {
                      const hand = result.landmarks[0];
-                     currentHandLandmarksRef.current = hand; // Store for rendering
+                     currentHandLandmarksRef.current = hand; 
 
                      const px = (1 - hand[9].x) * width;
                      const py = hand[9].y * height;
@@ -276,7 +269,7 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
                     id: Math.random(),
                     x: nozzleX,
                     y: nozzleY,
-                    vx: (Math.random() - 0.5) * 6, // Wider spray
+                    vx: (Math.random() - 0.5) * 6,
                     vy: -15 - Math.random() * 5, 
                     size: 8 + Math.random() * 8,
                     color: sauce.color,
@@ -284,10 +277,10 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
                 });
             }
 
-            // Logic to add color to history more frequently
-            if (timeRef.current % 10 === 0) {
+            // More aggressive color history capture (Every 3 frames)
+            if (timeRef.current % 3 === 0) {
                 // Keep the color history manageable but allow mixing
-                if (activeColorsRef.current.length < 50) {
+                if (activeColorsRef.current.length < 80) {
                     activeColorsRef.current.push(sauce.color);
                 } else {
                     // Replace a random existing color to keep it evolving
@@ -296,7 +289,7 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
             }
 
             if (feedProgressRef.current < 100) {
-                feedProgressRef.current += 0.8; // FASTER PROGRESS
+                feedProgressRef.current += 0.8;
             } else if (!isCompleteRef.current) {
                 isCompleteRef.current = true;
                 setTimeout(() => onComplete(activeColorsRef.current), 1500);
@@ -313,15 +306,14 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
         p.vy += gravity;
         p.life -= 0.02;
 
-        // Collision with monster area
         const dx = p.x - (width / 2);
-        const dy = p.y - (height / 2 - 50); // Adjusted for new monster pos
+        const dy = p.y - (height / 2 - 50); 
         const dist = Math.sqrt(dx*dx + dy*dy);
-        const hitRadius = 130 * monsterSizeRef.current; // Smaller hit radius
+        const hitRadius = 130 * monsterSizeRef.current; 
         
         if (dist < hitRadius && p.y < height / 2 + 50 && p.y > height / 2 - 150) {
              sprayParticlesRef.current.splice(i, 1);
-             monsterSizeRef.current = Math.min(monsterSizeRef.current + 0.003, 1.8); // Max size slightly reduced
+             monsterSizeRef.current = Math.min(monsterSizeRef.current + 0.003, 1.8); 
              continue;
         }
 
@@ -330,7 +322,6 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
         }
     }
 
-    // --- Update Ingredients Position ---
     embeddedIngredientsRef.current.forEach(ing => {
         ing.angle += ing.speed;
         ing.x = Math.cos(ing.angle) * ing.radius;
@@ -347,7 +338,6 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
   }, [animate]);
 
   const handleMouseMove = (e: React.MouseEvent) => {
-      // If hand is detected, ignore mouse
       if (currentHandLandmarksRef.current) return;
 
       const rect = containerRef.current?.getBoundingClientRect();
@@ -364,19 +354,15 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
   const handleMouseDown = () => { isSprayingRef.current = true; };
   const handleMouseUp = () => { isSprayingRef.current = false; };
 
-  // Render a thick, soft noodle
   const renderNoodle3D = (base: NoodleBase, i: number) => {
       const t = timeRef.current * base.speed + base.phase;
       
-      // Increased organic twisting wiggle
       const wiggleX = Math.sin(t) * 15 + Math.cos(t*0.5)*10;
       const wiggleY = Math.cos(t * 1.2) * 15 + Math.sin(t*0.8)*10;
       
-      // Face distortion interaction
       const mx = mousePosRef.current.x * 20;
       const my = -mousePosRef.current.y * 20;
 
-      // Determine Color from history
       const colorIndex = (i + base.colorOffset) % activeColorsRef.current.length;
       const baseColor = activeColorsRef.current[colorIndex];
 
@@ -387,7 +373,6 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
 
       return (
           <g key={base.id}>
-            {/* Shadow/Outline for depth */}
             <path
                 d={pathD}
                 stroke="rgba(0,0,0,0.15)"
@@ -396,7 +381,6 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
                 strokeLinecap="round"
                 transform="translate(2, 4)"
             />
-            {/* Base Color Body */}
             <path
                 d={pathD}
                 stroke={baseColor}
@@ -405,7 +389,6 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
                 strokeLinecap="round"
                 style={{ transition: 'stroke 0.5s ease' }}
             />
-            {/* Highlight for 3D Specular */}
             <path
                 d={pathD}
                 stroke="rgba(255,255,255,0.3)"
@@ -424,13 +407,12 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
   const centerY = dimensions.height / 2;
   const monsterY = centerY - 50; 
 
-  // Skeleton Rendering Logic
   const renderSkeleton = () => {
     const hand = currentHandLandmarksRef.current;
     if (!hand) return null;
 
     const centerNode = hand[9];
-    const scaleFactor = 50; // Reduce scale to keep within ~100px
+    const scaleFactor = 50; 
 
     const getDrawX = (val: number) => {
         const diff = (1 - val) - (1 - centerNode.x);
@@ -441,12 +423,10 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
         return cursorScreenPosRef.current.y + diff * scaleFactor * 3;
     };
 
-    // Use isSpraying for color state (Red if spraying/pinching, Yellow if idle)
     const color = isSprayingRef.current ? '#ef4444' : '#fbbf24';
 
     return (
         <g>
-            {/* Chef Hat Text - Always with hand */}
             <text x={cursorScreenPosRef.current.x + 10} y={cursorScreenPosRef.current.y - 30} fontSize="30">👨‍🍳</text>
 
             {HAND_CONNECTIONS.map((conn, idx) => {
@@ -485,7 +465,6 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
     >
       <video ref={videoRef} className="absolute top-0 left-0 w-1 h-1 opacity-0 pointer-events-none" autoPlay playsInline muted />
       
-      {/* SVG DEFINITIONS */}
       <svg width="0" height="0" className="absolute">
           <defs>
               <radialGradient id="gradMouth" cx="50%" cy="50%" r="50%">
@@ -521,22 +500,18 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
           </defs>
       </svg>
 
-      {/* --- UI OVERLAY (Top Center) --- */}
       <div className="absolute top-0 left-0 w-full flex flex-col items-center z-40 pointer-events-none">
-          {/* Interaction Hint (Matched to Stage 1 Style) */}
           <div className="bg-black/50 backdrop-blur text-white/80 px-6 py-2 rounded-b-xl border border-white/10 text-sm font-mono tracking-wide mb-6">
             Move Mouse / Hand to Feed
           </div>
 
           <div className="flex flex-col items-center gap-3">
-             {/* Sub Hint */}
              <div className="bg-black/40 backdrop-blur-md px-6 py-2 rounded-2xl border border-white/10 shadow-lg flex items-center gap-3">
                 <span className="text-white font-bold text-lg handwritten tracking-wide drop-shadow-md">
                     😮 Open Mouth • ✊ Pinch to Spray
                 </span>
              </div>
 
-             {/* Progress Bar */}
              <div className="w-64 h-5 bg-gray-800 rounded-full border-2 border-gray-600 overflow-hidden relative shadow-inner">
                 <div 
                   className="h-full bg-gradient-to-r from-yellow-400 via-orange-500 to-red-500 transition-all duration-300"
@@ -544,7 +519,6 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
                 />
              </div>
 
-             {/* Loading Status */}
              {!visionReady && !visionError && (
                 <div className="bg-yellow-600/80 text-white px-4 py-1 rounded-full text-xs font-mono animate-pulse font-bold shadow-lg">
                     INITIALIZING VISION AI...
@@ -554,17 +528,14 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
       </div>
 
       <svg className="absolute inset-0 w-full h-full pointer-events-none" xmlns="http://www.w3.org/2000/svg">
-        {/* Spray Particles */}
         <g>
             {sprayParticlesRef.current.map(p => (
                 <circle key={p.id} cx={p.x} cy={p.y} r={p.size} fill={p.color} opacity={0.9} />
             ))}
         </g>
 
-        {/* --- MONSTER GROUP (CENTERED) --- */}
         <g transform={`translate(${centerX}, ${monsterY}) scale(${monsterSizeRef.current})`}>
              
-             {/* 0. Embedded Ingredients (Behind Noodles) */}
              <g opacity={0.6}>
                 {embeddedIngredientsRef.current.slice(0, embeddedIngredientsRef.current.length / 2).map((ing) => (
                     <text 
@@ -580,12 +551,10 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
                 ))}
              </g>
 
-             {/* 1. Noodles Layer */}
              <g filter="url(#softShadow)"> 
                 {noodlesBaseRef.current.map((n, i) => renderNoodle3D(n, i))}
              </g>
 
-             {/* 2. Embedded Ingredients (Intertwined) */}
              <g opacity={0.9}>
                 {embeddedIngredientsRef.current.slice(embeddedIngredientsRef.current.length / 2).map((ing) => (
                     <text 
@@ -602,16 +571,13 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
                 ))}
              </g>
 
-             {/* 3. Face Layer (On Top) - SCALED SMALLER */}
              <g transform="translate(0, 20) scale(0.7)">
-                {/* Throat/Mouth Depth */}
                 <ellipse 
                     cx="0" cy="20" 
                     rx={60 + mouthOpenRef.current * 20} ry={20 + mouthOpenRef.current * 60} 
                     fill="url(#gradMouth)" stroke="#3f0808" strokeWidth="4" 
                 />
                 
-                {/* Teeth - Upper - CLIPPED */}
                 <g clipPath="url(#mouthClip)">
                     <path 
                         d={`M -40 ${-5 - mouthOpenRef.current * 10} Q 0 ${10 - mouthOpenRef.current * 5} 40 ${-5 - mouthOpenRef.current * 10}`} 
@@ -619,16 +585,12 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
                     />
                 </g>
 
-                {/* Left Eye */}
                 <g transform="translate(-50, -50)">
                    <circle r="32" fill="white" />
-                   {/* Iris */}
                    <circle cx={mousePosRef.current.x * 12} cy={-mousePosRef.current.y * 12} r={14 + (isSprayingRef.current ? 4 : 0)} fill="#1e293b" />
-                   {/* Highlight */}
                    <circle cx={mousePosRef.current.x * 12 - 6} cy={-mousePosRef.current.y * 12 - 6} r="5" fill="white" opacity="0.9" />
                    <circle cx={mousePosRef.current.x * 12 + 8} cy={-mousePosRef.current.y * 12 + 6} r="2" fill="white" opacity="0.6" />
                    
-                   {/* Eyebrow - 3D Effect */}
                    <path 
                      d={`M -35 ${-40 - mouthOpenRef.current*20} Q 0 ${-50 + mousePosRef.current.y*20} 35 ${-40 - mouthOpenRef.current*20}`} 
                      stroke="rgba(0,0,0,0.5)" strokeWidth="10" fill="none" strokeLinecap="round"
@@ -641,16 +603,12 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
                    />
                 </g>
 
-                {/* Right Eye */}
                 <g transform="translate(50, -50)">
                    <circle r="32" fill="white" />
-                   {/* Iris */}
                    <circle cx={mousePosRef.current.x * 12} cy={-mousePosRef.current.y * 12} r={14 + (isSprayingRef.current ? 4 : 0)} fill="#1e293b" />
-                   {/* Highlight */}
                    <circle cx={mousePosRef.current.x * 12 - 6} cy={-mousePosRef.current.y * 12 - 6} r="5" fill="white" opacity="0.9" />
                    <circle cx={mousePosRef.current.x * 12 + 8} cy={-mousePosRef.current.y * 12 + 6} r="2" fill="white" opacity="0.6" />
 
-                   {/* Eyebrow - 3D Effect */}
                    <path 
                      d={`M -35 ${-40 - mouthOpenRef.current*20} Q 0 ${-50 - mousePosRef.current.y*20} 35 ${-40 - mouthOpenRef.current*20}`} 
                      stroke="rgba(0,0,0,0.5)" strokeWidth="10" fill="none" strokeLinecap="round"
@@ -665,26 +623,21 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
              </g>
         </g>
         
-        {/* Nozzle (Bottom Center) */}
         <g transform={`translate(${centerX}, ${dimensions.height - 60})`}>
             <path d="M -40 60 L -25 -20 L 25 -20 L 40 60 Z" fill="url(#gradMetal)" stroke="#475569" strokeWidth="2" />
             <path d="M -32 20 L 32 20" stroke="rgba(0,0,0,0.2)" strokeWidth="4" />
             <path d="M -25 -20 L -20 -30 L 20 -30 L 25 -20 Z" fill="#1e293b" />
             
-            {/* Spray hint glow */}
             {isSprayingRef.current && (
                  <ellipse cx="0" cy="-35" rx="15" ry="5" fill="white" opacity="0.5" filter="blur(4px)" />
             )}
         </g>
 
-        {/* --- CURSOR OVERLAY (Skeleton) --- */}
         {renderSkeleton()}
 
       </svg>
 
-      {/* Sauce Controls - Cute UI - LARGER BUTTONS */}
       <div className="absolute bottom-6 left-0 w-full flex justify-center items-end pointer-events-none gap-24 md:gap-40 z-30">
-         {/* Left Group */}
          <div className="flex gap-3 md:gap-5 pointer-events-auto">
              {SAUCES.slice(0, 3).map((sauce) => (
                  <button
@@ -714,7 +667,6 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
              ))}
          </div>
          
-         {/* Right Group */}
          <div className="flex gap-3 md:gap-5 pointer-events-auto">
              {SAUCES.slice(3, 6).map((sauce) => (
                  <button
@@ -745,7 +697,6 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
          </div>
       </div>
       
-      {/* If no hand detected, show mouse cursor emoji */}
       {!currentHandLandmarksRef.current && (
         <div 
             className="fixed z-50 pointer-events-none transition-transform duration-75 ease-out"
@@ -755,7 +706,6 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
                 transform: `translate(${cursorScreenPosRef.current.x}px, ${cursorScreenPosRef.current.y}px)`,
             }}
         >
-             {/* Match Stage 1 Style */}
             <div className="relative text-3xl">
                 <span className="absolute -translate-x-1/2 -translate-y-1/2 text-4xl">
                     {isSprayingRef.current ? '✊' : '✋'}

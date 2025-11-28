@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useMemo } from 'react';
 import * as THREE from 'three';
 
 interface StageAftermathProps {
@@ -20,49 +20,8 @@ interface Comment {
 const MODES = ['CHAOS', 'FLOOR', 'CLUSTERS', 'HEART', 'GIO'] as const;
 type VisualMode = typeof MODES[number];
 
-const PARTICLE_COUNT = 3000;
-
-// --- SHADERS ---
-// Gives particles a "wet", solid, somewhat glowing food-chunk look
-const particleVertexShader = `
-  attribute float size;
-  attribute vec3 customColor;
-  varying vec3 vColor;
-  void main() {
-    vColor = customColor;
-    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-    // Scale by distance, but keep a minimum size for visibility
-    gl_PointSize = size * (400.0 / -mvPosition.z); 
-    gl_Position = projectionMatrix * mvPosition;
-  }
-`;
-
-const particleFragmentShader = `
-  varying vec3 vColor;
-  void main() {
-    vec2 coord = gl_PointCoord - vec2(0.5);
-    float dist = length(coord);
-    if (dist > 0.5) discard;
-    
-    // Diffuse shading (sphere look)
-    float diffuse = sqrt(1.0 - dist*dist*4.0);
-    
-    // Specular highlight (wetness / oily)
-    vec2 lightPos = vec2(-0.15, -0.15);
-    float spec = 0.0;
-    // Sharper highlight for "oily" feel
-    if (distance(coord, lightPos) < 0.12) {
-        spec = 0.7;
-    }
-
-    // Rim lighting (Cosmic/Volume feel)
-    float rim = smoothstep(0.35, 0.5, dist) * 0.4;
-
-    // Base color + highlights
-    vec3 finalColor = vColor * (0.3 + diffuse * 0.7) + vec3(spec) + vec3(rim * 0.5, rim * 0.2, 0.0);
-    gl_FragColor = vec4(finalColor, 1.0);
-  }
-`;
+const PARTICLE_COUNT = 2500; 
+const INGREDIENT_DENSITY = 30; 
 
 export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixedColors, ingredients, videoStream }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -77,7 +36,8 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
   const sceneRef = useRef<THREE.Scene | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
-  const particlesRef = useRef<THREE.Points | null>(null);
+  const instancedMeshRef = useRef<THREE.InstancedMesh | null>(null);
+  const spriteGroupRef = useRef<THREE.Group | null>(null);
   
   // Physics Refs for Morphing
   const currentPositionsRef = useRef<Float32Array | null>(null);
@@ -86,11 +46,36 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
   
   // Interaction Refs
   const mouseRef = useRef({ x: 0, y: 0 }); // Normalized -1 to 1
-  const raycasterRef = useRef(new THREE.Raycaster());
   const mouseVectorRef = useRef(new THREE.Vector3());
   
   const frameIdRef = useRef<number>(0);
   const timeRef = useRef(0);
+  const dummyRef = useRef(new THREE.Object3D());
+
+  // Texture Cache
+  const ingredientTextures = useMemo(() => {
+      const map = new Map<string, THREE.Texture>();
+      const list = ingredients.length > 0 ? ingredients : ['🍅', '🥬', '🦴', '👁️']; 
+      
+      list.forEach(emoji => {
+          if (!map.has(emoji)) {
+              const cvs = document.createElement('canvas');
+              cvs.width = 128; cvs.height = 128;
+              const ctx = cvs.getContext('2d');
+              if (ctx) {
+                  ctx.clearRect(0, 0, 128, 128);
+                  ctx.font = '90px serif';
+                  ctx.textAlign = 'center';
+                  ctx.textBaseline = 'middle';
+                  ctx.fillText(emoji, 64, 70);
+              }
+              const tex = new THREE.CanvasTexture(cvs);
+              tex.colorSpace = THREE.SRGBColorSpace;
+              map.set(emoji, tex);
+          }
+      });
+      return { map, list };
+  }, [ingredients]);
 
   // --- 1. SHAPE GENERATORS ---
   const generateShapes = (width: number, height: number) => {
@@ -102,7 +87,6 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
           GIO: new Float32Array(PARTICLE_COUNT * 3),
       };
 
-      // Helper: Random Point in Sphere
       const randomSphere = (radius: number) => {
           const u = Math.random();
           const v = Math.random();
@@ -116,81 +100,83 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
           };
       };
 
-      // A. CHAOS (Explosion / Universe)
+      // A. CHAOS
       for(let i=0; i<PARTICLE_COUNT; i++) {
-          const p = randomSphere(500); // Large spread
+          const p = randomSphere(600);
           targets.CHAOS[i*3] = p.x;
           targets.CHAOS[i*3+1] = p.y;
           targets.CHAOS[i*3+2] = p.z;
       }
 
-      // B. FLOOR (Scattered Debris)
+      // B. FLOOR
       for(let i=0; i<PARTICLE_COUNT; i++) {
-          // Spread on XZ plane, fixed Y
           const angle = Math.random() * Math.PI * 2;
-          const r = Math.sqrt(Math.random()) * 400; // Disc
+          const r = Math.sqrt(Math.random()) * 500;
           targets.FLOOR[i*3] = Math.cos(angle) * r;
-          targets.FLOOR[i*3+1] = -200 + (Math.random() * 20); // Floor level with slight pile
+          targets.FLOOR[i*3+1] = -250 + (Math.random() * 40); 
           targets.FLOOR[i*3+2] = Math.sin(angle) * r;
       }
 
-      // C. CLUSTERS (30 Groups)
+      // C. CLUSTERS
       const centers: {x:number, y:number, z:number}[] = [];
       for(let c=0; c<30; c++) {
-          centers.push(randomSphere(250));
+          centers.push(randomSphere(300));
       }
       for(let i=0; i<PARTICLE_COUNT; i++) {
           const center = centers[i % 30];
-          // Gaussian puff around center
-          const puff = randomSphere(30);
+          const puff = randomSphere(40);
           targets.CLUSTERS[i*3] = center.x + puff.x;
           targets.CLUSTERS[i*3+1] = center.y + puff.y;
           targets.CLUSTERS[i*3+2] = center.z + puff.z;
       }
 
-      // D. HEART (Descartes/Parametric)
+      // D. HEART
       for(let i=0; i<PARTICLE_COUNT; i++) {
           const t = Math.random() * Math.PI * 2;
-          const scale = 12;
+          const scale = 15;
           const x = 16 * Math.pow(Math.sin(t), 3);
           const y = 13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t);
           
-          const thickness = 5 + Math.random() * 5;
+          const thickness = 10 + Math.random() * 10;
           
           targets.HEART[i*3] = x * scale + (Math.random()-0.5)*thickness;
           targets.HEART[i*3+1] = y * scale + (Math.random()-0.5)*thickness + 50; 
-          targets.HEART[i*3+2] = (Math.random()-0.5) * 40; 
+          targets.HEART[i*3+2] = (Math.random()-0.5) * 60; 
       }
 
-      // E. GIO (Text Sampling)
+      // E. GIO
       const txtCanvas = document.createElement('canvas');
-      txtCanvas.width = 200;
-      txtCanvas.height = 100;
+      txtCanvas.width = 500; 
+      txtCanvas.height = 250;
       const ctx = txtCanvas.getContext('2d');
       if (ctx) {
           ctx.fillStyle = '#000';
-          ctx.fillRect(0,0,200,100);
+          ctx.fillRect(0,0,500,250);
           ctx.fillStyle = '#fff';
-          ctx.font = 'bold 80px Arial';
+          ctx.font = '900 180px Arial'; 
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          ctx.fillText('GIO', 100, 50);
+          ctx.fillText('GIO', 250, 125);
           
-          const imgData = ctx.getImageData(0,0,200,100);
+          const imgData = ctx.getImageData(0,0,500,250);
           const validPixels: number[] = [];
-          for(let j=0; j<imgData.data.length; j+=4) {
-              if (imgData.data[j] > 100) validPixels.push(j/4); 
+          
+          for(let y=0; y<250; y+=3) {
+              for(let x=0; x<500; x+=3) {
+                  const idx = (y*500 + x)*4;
+                  if (imgData.data[idx] > 100) validPixels.push(idx/4); 
+              }
           }
 
           for(let i=0; i<PARTICLE_COUNT; i++) {
               if (validPixels.length > 0) {
                   const pxIndex = validPixels[i % validPixels.length]; 
-                  const pxX = pxIndex % 200;
-                  const pxY = Math.floor(pxIndex / 200);
+                  const pxX = pxIndex % 500;
+                  const pxY = Math.floor(pxIndex / 500);
                   
-                  targets.GIO[i*3] = (pxX - 100) * 4 + (Math.random()-0.5)*8;
-                  targets.GIO[i*3+1] = -(pxY - 50) * 4 + (Math.random()-0.5)*8;
-                  targets.GIO[i*3+2] = (Math.random()-0.5) * 30;
+                  targets.GIO[i*3] = (pxX - 250) * 1.8 + (Math.random()-0.5)*5;
+                  targets.GIO[i*3+1] = -(pxY - 125) * 1.8 + (Math.random()-0.5)*5;
+                  targets.GIO[i*3+2] = (Math.random()-0.5) * 20;
               } else {
                    targets.GIO[i*3] = 0; targets.GIO[i*3+1] = 0; targets.GIO[i*3+2] = 0;
               }
@@ -207,80 +193,128 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
     const width = window.innerWidth;
     const height = window.innerHeight;
 
-    // A. Setup Three.js
+    // Scene
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x050505); // Deep space black
-    
+    scene.background = new THREE.Color(0x0a0a0a); 
+
     // Camera
-    const camera = new THREE.PerspectiveCamera(60, width / height, 0.1, 2000);
-    camera.position.z = 500;
+    const camera = new THREE.PerspectiveCamera(60, width / height, 0.1, 3000);
+    camera.position.z = 600;
     camera.position.y = 50;
 
+    // Renderer
     const renderer = new THREE.WebGLRenderer({ 
         canvas: canvasRef.current, 
         antialias: true,
-        powerPreference: "high-performance"
+        alpha: false 
     });
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // CRITICAL: Ensure colors are rendered in sRGB so they look correct (not too dark/muddy)
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
 
-    // B. Generate Shapes & Buffers
+    // Lighting
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6); // Increased ambient
+    scene.add(ambientLight);
+    
+    // Headlight attached to camera (always illuminates what we look at)
+    const headLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    headLight.position.set(0, 0, 1);
+    camera.add(headLight);
+    scene.add(camera);
+
+    const rimLight = new THREE.PointLight(0xff0000, 0.5, 1000);
+    rimLight.position.set(-200, 100, -200);
+    scene.add(rimLight);
+
+    // Buffers
     const targets = generateShapes(width, height);
     targetPositionsRef.current = targets;
 
     const positions = new Float32Array(PARTICLE_COUNT * 3);
-    const colors = new Float32Array(PARTICLE_COUNT * 3);
-    const sizes = new Float32Array(PARTICLE_COUNT);
-    const vels = new Float32Array(PARTICLE_COUNT * 3); // Velocity
+    const vels = new Float32Array(PARTICLE_COUNT * 3);
 
-    // Init Particles
+    // MATERIAL: Wet, Chunky Food Look
+    const geometry = new THREE.IcosahedronGeometry(1, 0); 
+    const material = new THREE.MeshPhysicalMaterial({
+        roughness: 0.5,
+        metalness: 0.1,
+        flatShading: true,
+        clearcoat: 0.8,
+        clearcoatRoughness: 0.2,
+        color: 0xffffff // Base color must be white for instance colors to show correctly
+    });
+    
+    const mesh = new THREE.InstancedMesh(geometry, material, PARTICLE_COUNT);
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    scene.add(mesh);
+    instancedMeshRef.current = mesh;
+
+    // Sprites (Ingredients)
+    const spriteGroup = new THREE.Group();
+    scene.add(spriteGroup);
+    spriteGroupRef.current = spriteGroup;
+    
+    // COLOR PALETTE LOGIC
+    // Ensure we have a rich palette even if only 1 color was passed
+    let palette = mixedColors.length > 0 ? [...mixedColors] : ['#fbbf24', '#ef4444'];
+    
+    // If palette is small, generate variations to avoid monotone look
+    if (palette.length < 5) {
+        const expanded: string[] = [];
+        palette.forEach(hex => {
+            const col = new THREE.Color(hex);
+            expanded.push(hex);
+            expanded.push('#' + col.clone().offsetHSL(0, 0, 0.1).getHexString()); // Lighter
+            expanded.push('#' + col.clone().offsetHSL(0, 0, -0.1).getHexString()); // Darker
+        });
+        palette = expanded;
+    }
+
     const colorObj = new THREE.Color();
+    const tempSprites: THREE.Sprite[] = [];
+
     for(let i=0; i<PARTICLE_COUNT; i++) {
-        // Start at CHAOS
+        // Init Pos
         positions[i*3] = targets.CHAOS[i*3];
         positions[i*3+1] = targets.CHAOS[i*3+1];
         positions[i*3+2] = targets.CHAOS[i*3+2];
 
-        // Colors - use mixing logic
-        let hex = '#fbbf24';
-        if (mixedColors.length > 0) hex = mixedColors[i % mixedColors.length];
-        else hex = i % 2 === 0 ? '#ef4444' : '#fbbf24'; 
-        
-        colorObj.set(hex);
-        // Random variation for "messy food" look
-        colorObj.offsetHSL(0, (Math.random()-0.5)*0.1, (Math.random()-0.5)*0.2);
+        const isIngredient = (i % INGREDIENT_DENSITY === 0);
 
-        colors[i*3] = colorObj.r;
-        colors[i*3+1] = colorObj.g;
-        colors[i*3+2] = colorObj.b;
-
-        // Varied chunk sizes
-        sizes[i] = 5 + Math.random() * 25; 
+        if (isIngredient) {
+            const emoji = ingredientTextures.list[i % ingredientTextures.list.length];
+            const tex = ingredientTextures.map.get(emoji);
+            const mat = new THREE.SpriteMaterial({ map: tex });
+            const sprite = new THREE.Sprite(mat);
+            sprite.scale.set(45, 45, 1);
+            spriteGroup.add(sprite);
+            tempSprites.push(sprite);
+            
+            // Hide mesh
+            dummyRef.current.position.set(0,0,0);
+            dummyRef.current.scale.set(0,0,0);
+            dummyRef.current.updateMatrix();
+            mesh.setMatrixAt(i, dummyRef.current.matrix);
+        } else {
+            // Apply Colors from Palette
+            const hex = palette[i % palette.length];
+            colorObj.set(hex);
+            // Slight noise per particle for realism
+            colorObj.offsetHSL(0, 0, (Math.random() - 0.5) * 0.05); 
+            mesh.setColorAt(i, colorObj);
+            
+            tempSprites.push(null as any); 
+        }
     }
+    
+    (spriteGroup as any).userData.sprites = tempSprites;
 
+    mesh.instanceColor!.needsUpdate = true;
     currentPositionsRef.current = positions;
     velocitiesRef.current = vels;
 
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute('customColor', new THREE.BufferAttribute(colors, 3));
-    geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
-
-    const material = new THREE.ShaderMaterial({
-        uniforms: {},
-        vertexShader: particleVertexShader,
-        fragmentShader: particleFragmentShader,
-        blending: THREE.NormalBlending, // Solid chunks
-        depthTest: true,
-        depthWrite: false,
-        transparent: true
-    });
-
-    const points = new THREE.Points(geometry, material);
-    scene.add(points);
-    particlesRef.current = points;
-
-    // C. Refs Assignment
+    // Refs
     sceneRef.current = scene;
     cameraRef.current = camera;
     rendererRef.current = renderer;
@@ -298,34 +332,40 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
         window.removeEventListener('resize', handleResize);
         renderer.dispose();
     };
-  }, [mixedColors]);
+  }, [mixedColors, ingredientTextures]);
 
   // --- 3. ANIMATION LOOP ---
   useEffect(() => {
     const loop = () => {
-        if (!particlesRef.current || !targetPositionsRef.current || !currentPositionsRef.current || !velocitiesRef.current) return;
+        if (!instancedMeshRef.current || 
+            !targetPositionsRef.current || 
+            !currentPositionsRef.current || 
+            !velocitiesRef.current) return;
 
         timeRef.current += 0.01;
-        const positions = particlesRef.current.geometry.attributes.position.array as Float32Array;
         const target = targetPositionsRef.current[mode];
+        const positions = currentPositionsRef.current;
         const vels = velocitiesRef.current;
+        const mesh = instancedMeshRef.current;
+        const sprites = (spriteGroupRef.current as any).userData.sprites as (THREE.Sprite | null)[];
+        const dummy = dummyRef.current;
         const camera = cameraRef.current;
 
         // Camera Orbit
         if (camera) {
-            const r = 550;
+            const r = 550 + Math.sin(timeRef.current * 0.5) * 50;
             const speed = 0.2;
             const targetX = r * Math.cos(timeRef.current * speed + mouseRef.current.x * 0.5);
             const targetZ = r * Math.sin(timeRef.current * speed + mouseRef.current.x * 0.5);
-            
-            // Smooth lerp camera
+            const targetY = 50 + mouseRef.current.y * 100;
+
             camera.position.x += (targetX - camera.position.x) * 0.05;
             camera.position.z += (targetZ - camera.position.z) * 0.05;
+            camera.position.y += (targetY - camera.position.y) * 0.05;
             camera.lookAt(0, 0, 0);
         }
 
-        // --- Interaction: Project Mouse to 3D Space ---
-        // We define a point in 3D space corresponding to the mouse cursor on the Z=0 plane (or average particle plane)
+        // Mouse Projection
         let mouseWorld = new THREE.Vector3(0,0,0);
         if (camera) {
             mouseVectorRef.current.set(mouseRef.current.x, mouseRef.current.y, 0.5);
@@ -335,7 +375,7 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
             mouseWorld = camera.position.clone().add(mouseVectorRef.current.multiplyScalar(distance));
         }
 
-        // Particle Physics (Spring to Target + Mouse Repulsion)
+        // Physics
         for(let i=0; i<PARTICLE_COUNT; i++) {
             const idx = i*3;
             
@@ -347,32 +387,31 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
             const py = positions[idx+1];
             const pz = positions[idx+2];
 
-            // 1. Spring force to shape
+            // Spring
             const k = 0.02 + Math.random() * 0.01; 
             const ax = (tx - px) * k;
             const ay = (ty - py) * k;
             const az = (tz - pz) * k;
 
-            // 2. Mouse Repulsion / Fluid Ripple
-            // Calculate distance to mouse world position (ignoring heavy Z depth diff to simulate 2.5D interaction)
+            // Repulsion
             const dx = px - mouseWorld.x;
             const dy = py - mouseWorld.y;
-            const dz = pz - mouseWorld.z; // Include Z for true volumetric feel
+            const dz = pz - mouseWorld.z;
             const distSq = dx*dx + dy*dy + dz*dz;
             
             let fx = 0, fy = 0, fz = 0;
-            const interactRadius = 25000; // Squared radius (approx 150 units)
+            const interactRadius = 25000; 
 
             if (distSq < interactRadius && distSq > 0.1) {
                 const dist = Math.sqrt(distSq);
-                const force = (1 - dist / Math.sqrt(interactRadius)) * 2.5; // Strong push
+                const force = (1 - dist / Math.sqrt(interactRadius)) * 3.0;
                 fx = (dx / dist) * force;
                 fy = (dy / dist) * force;
                 fz = (dz / dist) * force;
             }
 
-            // 3. Noise / Drift
-            const noiseScale = 0.15;
+            // Noise
+            const noiseScale = 0.2;
             const nx = (Math.random() - 0.5) * noiseScale;
             const ny = (Math.random() - 0.5) * noiseScale;
             const nz = (Math.random() - 0.5) * noiseScale;
@@ -381,19 +420,35 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
             vels[idx+1] += ay + ny + fy;
             vels[idx+2] += az + nz + fz;
 
-            // 4. Damping (Drag) - Simulates viscosity
-            const friction = 0.92;
+            // Drag
+            const friction = 0.93;
             vels[idx]   *= friction;
             vels[idx+1] *= friction;
             vels[idx+2] *= friction;
 
-            // Update Position
             positions[idx]   += vels[idx];
             positions[idx+1] += vels[idx+1];
             positions[idx+2] += vels[idx+2];
+
+            // Update Transforms
+            const isIngredient = (i % INGREDIENT_DENSITY === 0);
+            if (isIngredient) {
+                const sprite = sprites[i];
+                if (sprite) {
+                    sprite.position.set(positions[idx], positions[idx+1], positions[idx+2]);
+                }
+            } else {
+                dummy.position.set(positions[idx], positions[idx+1], positions[idx+2]);
+                const rotSpeed = 0.05 + i * 0.0001;
+                dummy.rotation.set(timeRef.current + rotSpeed, timeRef.current * 0.5 + i, i);
+                const s = 10 + Math.sin(i + timeRef.current) * 4; 
+                dummy.scale.set(s, s, s);
+                dummy.updateMatrix();
+                mesh.setMatrixAt(i, dummy.matrix);
+            }
         }
         
-        particlesRef.current.geometry.attributes.position.needsUpdate = true;
+        mesh.instanceMatrix.needsUpdate = true;
         rendererRef.current?.render(sceneRef.current!, cameraRef.current!);
         frameIdRef.current = requestAnimationFrame(loop);
     };
@@ -402,7 +457,7 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
     return () => cancelAnimationFrame(frameIdRef.current);
   }, [mode]);
 
-  // --- 4. CHAT SIMULATION ---
+  // --- 4. CHAT ---
   useEffect(() => {
     const names = ["PastaFan99", "GourmetHunter", "SchoolCanteen", "GioTeacher", "HungryStudent", "FoodCritic_X", "YummyYum"];
     const msgs = [
@@ -435,7 +490,6 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
   }, []);
 
   const handleMouseMove = (e: React.MouseEvent) => {
-      // Normalize to -1 to 1
       mouseRef.current.x = (e.clientX / window.innerWidth) * 2 - 1;
       mouseRef.current.y = -(e.clientY / window.innerHeight) * 2 + 1;
   };
@@ -455,8 +509,6 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
       <canvas ref={canvasRef} className="block w-full h-full" />
       
       {/* --- UI OVERLAYS --- */}
-      
-      {/* 1. Live Stream UI (Top Left) */}
       <div className="absolute top-6 left-6 w-80 pointer-events-none z-10 flex flex-col gap-4">
          <div className="bg-black/60 backdrop-blur-md rounded-xl border border-white/10 overflow-hidden flex flex-col shadow-2xl">
             <div className="bg-red-900/40 p-3 border-b border-white/10 flex items-center justify-between">
@@ -483,12 +535,10 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
          </div>
       </div>
 
-      {/* 2. Shape Switcher (Bottom Center) */}
       <div className="absolute bottom-10 left-1/2 -translate-x-1/2 pointer-events-auto flex flex-col items-center gap-4 z-20">
           <div className="text-white/30 font-mono text-xs tracking-[0.5em] uppercase mb-2">
               Current Mode: <span className="text-yellow-400 font-bold">{mode}</span>
           </div>
-          
           <button 
             onClick={cycleMode}
             className="group relative px-8 py-3 bg-transparent overflow-hidden rounded-full border border-white/20 transition-all hover:border-yellow-400"
@@ -500,7 +550,6 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
           </button>
       </div>
 
-      {/* 3. Restart (Bottom Right) */}
       <div className="absolute bottom-10 right-10 pointer-events-auto z-20">
           <button 
             onClick={onRestart}
