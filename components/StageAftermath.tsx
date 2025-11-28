@@ -14,6 +14,7 @@ interface Comment {
     text: string;
     avatar: string;
     color: string;
+    isGift?: boolean;
 }
 
 // --- CONSTANTS & TYPES ---
@@ -21,7 +22,7 @@ const MODES = ['CHAOS', 'FLOOR', 'CLUSTERS', 'HEART', 'GIO'] as const;
 type VisualMode = typeof MODES[number];
 
 const PARTICLE_COUNT = 2500; 
-const INGREDIENT_DENSITY = 30; 
+const INGREDIENT_DENSITY = 25; // Higher density of ingredients
 
 export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixedColors, ingredients, videoStream }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -38,12 +39,23 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const instancedMeshRef = useRef<THREE.InstancedMesh | null>(null);
   const spriteGroupRef = useRef<THREE.Group | null>(null);
+  const eyeGroupRef = useRef<THREE.Group | null>(null);
+  const nerveLineRef = useRef<THREE.Line | null>(null);
   
   // Physics Refs for Morphing
   const currentPositionsRef = useRef<Float32Array | null>(null);
   const targetPositionsRef = useRef<Record<VisualMode, Float32Array> | null>(null);
   const velocitiesRef = useRef<Float32Array | null>(null);
   
+  // Eyeball Physics
+  const eyePhysicsRef = useRef([
+      { x: -100, y: 0, z: 0, vx: 0, vy: 0, vz: 0, anchorX: -150 },
+      { x: 100, y: 0, z: 0, vx: 0, vy: 0, vz: 0, anchorX: 150 }
+  ]);
+  
+  // Explosion Trigger
+  const explosionForceRef = useRef(0);
+
   // Interaction Refs
   const mouseRef = useRef({ x: 0, y: 0 }); // Normalized -1 to 1
   const mouseVectorRef = useRef(new THREE.Vector3());
@@ -55,7 +67,8 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
   // Texture Cache
   const ingredientTextures = useMemo(() => {
       const map = new Map<string, THREE.Texture>();
-      const list = ingredients.length > 0 ? ingredients : ['🍅', '🥬', '🦴', '👁️']; 
+      // Use all collected ingredients or fallback if empty
+      const list = ingredients.length > 0 ? ingredients : ['🍅', '🥬', '🦴', '👁️', '🥓', '🍄']; 
       
       list.forEach(emoji => {
           if (!map.has(emoji)) {
@@ -144,39 +157,43 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
           targets.HEART[i*3+2] = (Math.random()-0.5) * 60; 
       }
 
-      // E. GIO
+      // E. GIO (Refined)
       const txtCanvas = document.createElement('canvas');
-      txtCanvas.width = 500; 
-      txtCanvas.height = 250;
+      txtCanvas.width = 600; 
+      txtCanvas.height = 300;
       const ctx = txtCanvas.getContext('2d');
       if (ctx) {
           ctx.fillStyle = '#000';
-          ctx.fillRect(0,0,500,250);
+          ctx.fillRect(0,0,600,300);
           ctx.fillStyle = '#fff';
-          ctx.font = '900 180px Arial'; 
+          // Use bold sans-serif for uniform stroke width
+          ctx.font = '900 200px Roboto, Arial, sans-serif'; 
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          ctx.fillText('GIO', 250, 125);
+          ctx.fillText('GIO', 300, 150);
           
-          const imgData = ctx.getImageData(0,0,500,250);
+          const imgData = ctx.getImageData(0,0,600,300);
           const validPixels: number[] = [];
           
-          for(let y=0; y<250; y+=3) {
-              for(let x=0; x<500; x+=3) {
-                  const idx = (y*500 + x)*4;
-                  if (imgData.data[idx] > 100) validPixels.push(idx/4); 
+          // Denser sampling
+          for(let y=0; y<300; y+=2) {
+              for(let x=0; x<600; x+=2) {
+                  const idx = (y*600 + x)*4;
+                  if (imgData.data[idx] > 128) validPixels.push(idx/4); 
               }
           }
 
           for(let i=0; i<PARTICLE_COUNT; i++) {
               if (validPixels.length > 0) {
-                  const pxIndex = validPixels[i % validPixels.length]; 
-                  const pxX = pxIndex % 500;
-                  const pxY = Math.floor(pxIndex / 500);
+                  // Randomly pick a valid pixel to avoid striping patterns
+                  const pxIndex = validPixels[Math.floor(Math.random() * validPixels.length)]; 
+                  const pxX = pxIndex % 600;
+                  const pxY = Math.floor(pxIndex / 600);
                   
-                  targets.GIO[i*3] = (pxX - 250) * 1.8 + (Math.random()-0.5)*5;
-                  targets.GIO[i*3+1] = -(pxY - 125) * 1.8 + (Math.random()-0.5)*5;
-                  targets.GIO[i*3+2] = (Math.random()-0.5) * 20;
+                  targets.GIO[i*3] = (pxX - 300) * 1.5;
+                  targets.GIO[i*3+1] = -(pxY - 150) * 1.5;
+                  // Minimal Z variation for consistent flatness
+                  targets.GIO[i*3+2] = (Math.random()-0.5) * 10; 
               } else {
                    targets.GIO[i*3] = 0; targets.GIO[i*3+1] = 0; targets.GIO[i*3+2] = 0;
               }
@@ -210,14 +227,12 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
     });
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    // CRITICAL: Ensure colors are rendered in sRGB so they look correct (not too dark/muddy)
     renderer.outputColorSpace = THREE.SRGBColorSpace;
 
     // Lighting
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6); // Increased ambient
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6); 
     scene.add(ambientLight);
     
-    // Headlight attached to camera (always illuminates what we look at)
     const headLight = new THREE.DirectionalLight(0xffffff, 0.8);
     headLight.position.set(0, 0, 1);
     camera.add(headLight);
@@ -227,22 +242,22 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
     rimLight.position.set(-200, 100, -200);
     scene.add(rimLight);
 
-    // Buffers
+    // --- PARTICLE SYSTEM ---
     const targets = generateShapes(width, height);
     targetPositionsRef.current = targets;
 
     const positions = new Float32Array(PARTICLE_COUNT * 3);
     const vels = new Float32Array(PARTICLE_COUNT * 3);
 
-    // MATERIAL: Wet, Chunky Food Look
-    const geometry = new THREE.IcosahedronGeometry(1, 0); 
+    // MATERIAL: Smaller, faceted chunks
+    const geometry = new THREE.IcosahedronGeometry(0.7, 0); // Smaller base geometry
     const material = new THREE.MeshPhysicalMaterial({
-        roughness: 0.5,
+        roughness: 0.4,
         metalness: 0.1,
         flatShading: true,
         clearcoat: 0.8,
         clearcoatRoughness: 0.2,
-        color: 0xffffff // Base color must be white for instance colors to show correctly
+        color: 0xffffff
     });
     
     const mesh = new THREE.InstancedMesh(geometry, material, PARTICLE_COUNT);
@@ -256,17 +271,14 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
     spriteGroupRef.current = spriteGroup;
     
     // COLOR PALETTE LOGIC
-    // Ensure we have a rich palette even if only 1 color was passed
     let palette = mixedColors.length > 0 ? [...mixedColors] : ['#fbbf24', '#ef4444'];
-    
-    // If palette is small, generate variations to avoid monotone look
     if (palette.length < 5) {
         const expanded: string[] = [];
         palette.forEach(hex => {
             const col = new THREE.Color(hex);
             expanded.push(hex);
-            expanded.push('#' + col.clone().offsetHSL(0, 0, 0.1).getHexString()); // Lighter
-            expanded.push('#' + col.clone().offsetHSL(0, 0, -0.1).getHexString()); // Darker
+            expanded.push('#' + col.clone().offsetHSL(0, 0, 0.1).getHexString());
+            expanded.push('#' + col.clone().offsetHSL(0, 0, -0.1).getHexString());
         });
         palette = expanded;
     }
@@ -275,7 +287,7 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
     const tempSprites: THREE.Sprite[] = [];
 
     for(let i=0; i<PARTICLE_COUNT; i++) {
-        // Init Pos
+        // Init Pos (Start exploded)
         positions[i*3] = targets.CHAOS[i*3];
         positions[i*3+1] = targets.CHAOS[i*3+1];
         positions[i*3+2] = targets.CHAOS[i*3+2];
@@ -283,7 +295,8 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
         const isIngredient = (i % INGREDIENT_DENSITY === 0);
 
         if (isIngredient) {
-            const emoji = ingredientTextures.list[i % ingredientTextures.list.length];
+            // Randomly pick from ALL collected ingredients
+            const emoji = ingredientTextures.list[Math.floor(Math.random() * ingredientTextures.list.length)];
             const tex = ingredientTextures.map.get(emoji);
             const mat = new THREE.SpriteMaterial({ map: tex });
             const sprite = new THREE.Sprite(mat);
@@ -291,16 +304,15 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
             spriteGroup.add(sprite);
             tempSprites.push(sprite);
             
-            // Hide mesh
+            // Hide mesh instance
             dummyRef.current.position.set(0,0,0);
             dummyRef.current.scale.set(0,0,0);
             dummyRef.current.updateMatrix();
             mesh.setMatrixAt(i, dummyRef.current.matrix);
         } else {
-            // Apply Colors from Palette
-            const hex = palette[i % palette.length];
+            // Apply Colors
+            const hex = palette[Math.floor(Math.random() * palette.length)]; // Randomly mix colors
             colorObj.set(hex);
-            // Slight noise per particle for realism
             colorObj.offsetHSL(0, 0, (Math.random() - 0.5) * 0.05); 
             mesh.setColorAt(i, colorObj);
             
@@ -309,10 +321,43 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
     }
     
     (spriteGroup as any).userData.sprites = tempSprites;
-
     mesh.instanceColor!.needsUpdate = true;
     currentPositionsRef.current = positions;
     velocitiesRef.current = vels;
+
+    // --- EYEBALLS & NERVES ---
+    const eyeGroup = new THREE.Group();
+    scene.add(eyeGroup);
+    eyeGroupRef.current = eyeGroup;
+
+    // Create Eyes
+    const eyeGeo = new THREE.SphereGeometry(25, 32, 32);
+    const eyeMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    const pupilGeo = new THREE.SphereGeometry(10, 32, 32);
+    const pupilMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+    
+    // Left Eye
+    const eyeL = new THREE.Mesh(eyeGeo, eyeMat);
+    const pupilL = new THREE.Mesh(pupilGeo, pupilMat);
+    pupilL.position.z = 20;
+    eyeL.add(pupilL);
+    eyeGroup.add(eyeL);
+
+    // Right Eye
+    const eyeR = new THREE.Mesh(eyeGeo, eyeMat);
+    const pupilR = new THREE.Mesh(pupilGeo, pupilMat);
+    pupilR.position.z = 20;
+    eyeR.add(pupilR);
+    eyeGroup.add(eyeR);
+
+    // Nerves (Lines)
+    const lineGeo = new THREE.BufferGeometry();
+    const linePos = new Float32Array(2 * 2 * 3); // 2 lines, 2 points each, 3 coords
+    lineGeo.setAttribute('position', new THREE.BufferAttribute(linePos, 3));
+    const lineMat = new THREE.LineBasicMaterial({ color: 0xff0000, linewidth: 2 });
+    const nerves = new THREE.LineSegments(lineGeo, lineMat);
+    scene.add(nerves);
+    nerveLineRef.current = nerves;
 
     // Refs
     sceneRef.current = scene;
@@ -343,6 +388,12 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
             !velocitiesRef.current) return;
 
         timeRef.current += 0.01;
+        
+        // --- EXPLOSION FORCE DECAY ---
+        if (explosionForceRef.current > 0) {
+            explosionForceRef.current *= 0.9; // Decay
+        }
+
         const target = targetPositionsRef.current[mode];
         const positions = currentPositionsRef.current;
         const vels = velocitiesRef.current;
@@ -350,6 +401,8 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
         const sprites = (spriteGroupRef.current as any).userData.sprites as (THREE.Sprite | null)[];
         const dummy = dummyRef.current;
         const camera = cameraRef.current;
+        const eyeGroup = eyeGroupRef.current;
+        const nerves = nerveLineRef.current;
 
         // Camera Orbit
         if (camera) {
@@ -375,7 +428,86 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
             mouseWorld = camera.position.clone().add(mouseVectorRef.current.multiplyScalar(distance));
         }
 
-        // Physics
+        // --- EYEBALL PHYSICS ---
+        if (eyeGroup && nerves && camera) {
+            // Get screen top position in world space roughly
+            // Just simulate an anchor point far above y=0
+            const anchorY = 400;
+
+            eyePhysicsRef.current.forEach((eye, i) => {
+                const mesh = eyeGroup.children[i];
+                
+                // Spring to Anchor
+                const dx = eye.anchorX - eye.x;
+                const dy = anchorY - eye.y;
+                const dz = 0 - eye.z;
+                
+                const springK = 0.01;
+                eye.vx += dx * springK;
+                eye.vy += dy * springK;
+                eye.vz += dz * springK;
+
+                // Gravity
+                eye.vy -= 1.5;
+
+                // Mouse Repulsion / Interaction
+                const mdx = eye.x - mouseWorld.x;
+                const mdy = eye.y - mouseWorld.y;
+                const mdz = eye.z - mouseWorld.z;
+                const mDist = Math.sqrt(mdx*mdx + mdy*mdy + mdz*mdz);
+                if (mDist < 200) {
+                    const f = (200 - mDist) * 0.1;
+                    eye.vx += (mdx/mDist) * f;
+                    eye.vy += (mdy/mDist) * f;
+                    eye.vz += (mdz/mDist) * f;
+                }
+
+                // Explosion Force
+                if (explosionForceRef.current > 0.1) {
+                    const ex = eye.x; // Force from center (0,0,0)
+                    const ey = eye.y;
+                    const ez = eye.z;
+                    const eDist = Math.sqrt(ex*ex + ey*ey + ez*ez) + 0.1;
+                    const force = explosionForceRef.current * 2;
+                    eye.vx += (ex/eDist) * force;
+                    eye.vy += (ey/eDist) * force;
+                    eye.vz += (ez/eDist) * force;
+                }
+
+                // Damping
+                eye.vx *= 0.96;
+                eye.vy *= 0.96;
+                eye.vz *= 0.96;
+
+                eye.x += eye.vx;
+                eye.y += eye.vy;
+                eye.z += eye.vz;
+
+                // Floor bounce
+                if (eye.y < -250) {
+                    eye.y = -250;
+                    eye.vy *= -0.8;
+                }
+
+                mesh.position.set(eye.x, eye.y, eye.z);
+                mesh.lookAt(mouseWorld);
+                
+                // Update Line Geometry
+                const positions = nerves.geometry.attributes.position.array as Float32Array;
+                const idx = i * 6;
+                // Anchor Point
+                positions[idx] = eye.anchorX;
+                positions[idx+1] = anchorY + 100; // Extend offscreen
+                positions[idx+2] = 0;
+                // Eye Point
+                positions[idx+3] = eye.x;
+                positions[idx+4] = eye.y;
+                positions[idx+5] = eye.z;
+            });
+            nerves.geometry.attributes.position.needsUpdate = true;
+        }
+
+        // --- PARTICLE PHYSICS ---
         for(let i=0; i<PARTICLE_COUNT; i++) {
             const idx = i*3;
             
@@ -393,7 +525,7 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
             const ay = (ty - py) * k;
             const az = (tz - pz) * k;
 
-            // Repulsion
+            // Mouse Repulsion
             const dx = px - mouseWorld.x;
             const dy = py - mouseWorld.y;
             const dz = pz - mouseWorld.z;
@@ -408,6 +540,18 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
                 fx = (dx / dist) * force;
                 fy = (dy / dist) * force;
                 fz = (dz / dist) * force;
+            }
+
+            // Explosion Force
+            if (explosionForceRef.current > 0.1) {
+                 const ex = px;
+                 const ey = py;
+                 const ez = pz;
+                 const eDist = Math.sqrt(ex*ex + ey*ey + ez*ez) + 0.1;
+                 const force = explosionForceRef.current * (1.0 + Math.random());
+                 fx += (ex/eDist) * force;
+                 fy += (ey/eDist) * force;
+                 fz += (ez/eDist) * force;
             }
 
             // Noise
@@ -441,7 +585,8 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
                 dummy.position.set(positions[idx], positions[idx+1], positions[idx+2]);
                 const rotSpeed = 0.05 + i * 0.0001;
                 dummy.rotation.set(timeRef.current + rotSpeed, timeRef.current * 0.5 + i, i);
-                const s = 10 + Math.sin(i + timeRef.current) * 4; 
+                // Smaller size logic: 5 base + sine wave
+                const s = 6 + Math.sin(i + timeRef.current) * 3; 
                 dummy.scale.set(s, s, s);
                 dummy.updateMatrix();
                 mesh.setMatrixAt(i, dummy.matrix);
@@ -459,19 +604,21 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
 
   // --- 4. CHAT ---
   useEffect(() => {
-    const names = ["PastaFan99", "GourmetHunter", "SchoolCanteen", "GioTeacher", "HungryStudent", "FoodCritic_X", "YummyYum"];
+    const names = ["PastaFan99", "GourmetHunter", "SchoolCanteen", "GioTeacher", "HungryStudent", "FoodCritic_X", "YummyYum", "SpaceChef"];
     const msgs = [
-        "OMG IT EXPLODED!! 🤯",
-        "Mathematical Beauty!",
-        "Is that a heart? ❤️",
-        "GIO GIO GIO",
-        "It's like Interstellar...",
-        "Chaotic but tasty",
-        "Physics engine go brrr",
-        "Mamma Mia! 🍝"
+        "Physics = Broken 😂",
+        "Look at those eyes lol",
+        "Is this GIO or GOD?",
+        "Beautiful chaos ❤️",
+        "More sauce please!",
+        "My GPU is screaming",
+        "Wait, is that a mushroom?",
+        "Mamma Mia! 🤌",
+        "Entropy confirmed.",
+        "Can I eat this?",
     ];
-    const colors = ["#f87171", "#fbbf24", "#60a5fa", "#4ade80", "#c084fc"];
-    const avatars = ["😲", "😋", "😱", "😂", "👨‍🍳", "🍝"];
+    const colors = ["#f87171", "#fbbf24", "#60a5fa", "#4ade80", "#c084fc", "#f472b6"];
+    const avatars = ["😲", "😋", "😱", "😂", "👨‍🍳", "🍝", "👽", "🪐"];
 
     const interval = setInterval(() => {
         setComments(prev => {
@@ -482,7 +629,8 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
                 avatar: avatars[Math.floor(Math.random() * avatars.length)],
                 color: colors[Math.floor(Math.random() * colors.length)]
             };
-            return [newComment, ...prev].slice(0, 8);
+            // Keep fewer items for the floating effect
+            return [...prev, newComment].slice(-8); 
         });
         setLikes(l => l + Math.floor(Math.random() * 50));
     }, 1200);
@@ -500,6 +648,23 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
       setMode(MODES[nextIdx]);
   };
 
+  const sendGift = () => {
+      // Trigger Explosion in Physics
+      explosionForceRef.current = 50.0;
+      setLikes(l => l + 500);
+      setComments(prev => [
+          ...prev,
+          {
+            id: Date.now(),
+            user: "YOU",
+            text: "EXPLOSION GIFT! 🎁💥",
+            avatar: "🤠",
+            color: "#fbbf24",
+            isGift: true
+          }
+      ].slice(-8));
+  };
+
   return (
     <div 
         ref={containerRef} 
@@ -508,31 +673,47 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
     >
       <canvas ref={canvasRef} className="block w-full h-full" />
       
-      {/* --- UI OVERLAYS --- */}
-      <div className="absolute top-6 left-6 w-80 pointer-events-none z-10 flex flex-col gap-4">
-         <div className="bg-black/60 backdrop-blur-md rounded-xl border border-white/10 overflow-hidden flex flex-col shadow-2xl">
-            <div className="bg-red-900/40 p-3 border-b border-white/10 flex items-center justify-between">
-                <span className="text-red-500 font-bold animate-pulse flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-red-500"/> LIVE
-                </span>
-                <span className="text-xs text-gray-400 font-mono">12,402 watching</span>
-            </div>
-            <div className="h-64 overflow-y-auto p-3 flex flex-col gap-2 mask-image-linear-to-b">
-                {comments.map((c) => (
-                    <div key={c.id} className="text-sm animate-[fadeIn_0.3s_ease-out]">
-                        <span className="mr-2 opacity-80">{c.avatar}</span>
-                        <span className="font-bold mr-2 text-shadow-sm" style={{color: c.color}}>{c.user}:</span>
-                        <span className="text-white/80 font-light">{c.text}</span>
+      {/* --- UI: LEFT SIDE FLOATING CHAT --- */}
+      <div className="absolute top-1/4 bottom-1/4 left-6 w-64 pointer-events-none z-10 flex flex-col justify-end gap-2 mask-image-linear-to-t">
+            {comments.map((c) => (
+                <div 
+                    key={c.id} 
+                    className={`
+                        text-sm px-4 py-2 rounded-2xl backdrop-blur-md shadow-lg transform transition-all duration-500 animate-slide-up origin-left
+                        ${c.isGift ? 'bg-gradient-to-r from-yellow-500/80 to-orange-500/80 border-2 border-white' : 'bg-black/40 border border-white/10'}
+                    `}
+                >
+                    <div className="flex items-center gap-2">
+                            <span className="text-lg">{c.avatar}</span>
+                            <span className="font-bold text-shadow-sm truncate" style={{color: c.color}}>{c.user}</span>
                     </div>
-                ))}
-            </div>
+                    <p className={`leading-snug mt-1 ${c.isGift ? 'text-white font-bold' : 'text-white/90'}`}>
+                        {c.text}
+                    </p>
+                </div>
+            ))}
+      </div>
+      
+      {/* --- UI: TOP STATS --- */}
+      <div className="absolute top-6 left-6 pointer-events-none z-10">
+         <div className="bg-red-600 text-white px-3 py-1 rounded-full text-xs font-bold animate-pulse flex items-center gap-2 shadow-lg">
+             <span className="w-2 h-2 rounded-full bg-white"/> LIVE
+             <span className="opacity-80 font-mono">15,892 VIEWERS</span>
          </div>
+      </div>
          
-         <div className="flex justify-start">
-             <div className="bg-gradient-to-r from-pink-600 to-purple-600 text-white px-4 py-1 rounded-full font-bold shadow-lg text-sm flex items-center gap-2">
+      {/* --- UI: CONTROLS --- */}
+      <div className="absolute bottom-10 left-10 pointer-events-auto flex items-center gap-4 z-20">
+             <div className="bg-black/50 backdrop-blur text-white px-4 py-2 rounded-full font-bold shadow-lg text-sm border border-white/10">
                  ❤️ {likes.toLocaleString()}
              </div>
-         </div>
+             
+             <button 
+                onClick={sendGift}
+                className="bg-gradient-to-r from-pink-500 to-rose-500 text-white px-6 py-2 rounded-full font-bold shadow-lg text-sm hover:scale-105 active:scale-95 transition-transform border border-white/20 animate-pulse"
+             >
+                 🎁 Send Gift (BOOM!)
+             </button>
       </div>
 
       <div className="absolute bottom-10 left-1/2 -translate-x-1/2 pointer-events-auto flex flex-col items-center gap-4 z-20">
@@ -558,7 +739,19 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
               RESTART SYSTEM
           </button>
       </div>
-
+      
+      <style>{`
+        @keyframes slide-up {
+            0% { opacity: 0; transform: translateY(20px) scale(0.9); }
+            100% { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .animate-slide-up {
+            animation: slide-up 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+        }
+        .mask-image-linear-to-t {
+             mask-image: linear-gradient(to top, black 80%, transparent 100%);
+        }
+      `}</style>
     </div>
   );
 };
