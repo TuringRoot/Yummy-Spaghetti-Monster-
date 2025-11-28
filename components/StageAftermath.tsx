@@ -44,8 +44,8 @@ interface LuxuryGift {
 const MODES = ['CHAOS', 'DROP', 'DINING', 'HEART', 'GIO'] as const;
 type VisualMode = typeof MODES[number];
 
-const PARTICLE_COUNT = 2500; 
-const INGREDIENT_DENSITY = 50; 
+const PARTICLE_COUNT = 1500; 
+const INGREDIENT_DENSITY = 40; 
 const BOWL_COUNT = 30;
 
 const LUXURY_ITEMS = [
@@ -59,6 +59,115 @@ const LUXURY_ITEMS = [
 const AVATARS = ["🐶", "🐱", "🐭", "🐹", "🐰", "🦊", "🐻", "🐼", "🐨", "🐯", "🦁", "🐮", "🐷", "🐸", "🐵", "🐔", "🐧", "🐦", "🐤", "🦆", "🦄", "🐴", "🐗", "🐺", "🦇", "🦉", "🦅", "🐝", "🐛", "🦋"];
 
 const LIKE_ICONS = ["❤️", "💖", "🔥", "🌟", "👍", "🍝", "🥰", "🧡"];
+
+// --- Helper Functions ---
+const generateShapes = (width: number, height: number) => {
+    const targets: Record<VisualMode, Float32Array> = {
+        CHAOS: new Float32Array(PARTICLE_COUNT * 3),
+        DROP: new Float32Array(PARTICLE_COUNT * 3),
+        DINING: new Float32Array(PARTICLE_COUNT * 3),
+        HEART: new Float32Array(PARTICLE_COUNT * 3),
+        GIO: new Float32Array(PARTICLE_COUNT * 3),
+    };
+
+    const randomSphere = (radius: number) => {
+        const u = Math.random();
+        const v = Math.random();
+        const theta = 2 * Math.PI * u;
+        const phi = Math.acos(2 * v - 1);
+        const r = Math.cbrt(Math.random()) * radius;
+        return {
+            x: r * Math.sin(phi) * Math.cos(theta),
+            y: r * Math.sin(phi) * Math.sin(theta),
+            z: r * Math.cos(phi)
+        };
+    };
+
+    // A. CHAOS
+    for(let i=0; i<PARTICLE_COUNT; i++) {
+        const p = randomSphere(600);
+        targets.CHAOS[i*3] = p.x;
+        targets.CHAOS[i*3+1] = p.y;
+        targets.CHAOS[i*3+2] = p.z;
+    }
+
+    // B. DROP
+    for(let i=0; i<PARTICLE_COUNT; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const r = Math.sqrt(Math.random()) * 600;
+        targets.DROP[i*3] = Math.cos(angle) * r;
+        targets.DROP[i*3+1] = -250; 
+        targets.DROP[i*3+2] = Math.sin(angle) * r;
+    }
+
+    // C. DINING
+    const centers: {x:number, y:number, z:number}[] = [];
+    
+    for(let c=0; c<BOWL_COUNT; c++) {
+        const center = randomSphere(350);
+        centers.push(center);
+    }
+    for(let i=0; i<PARTICLE_COUNT; i++) {
+        const center = centers[i % BOWL_COUNT];
+        const r = Math.random() * 35;
+        const theta = Math.random() * Math.PI * 2;
+        targets.DINING[i*3] = center.x + r * Math.cos(theta);
+        targets.DINING[i*3+1] = center.y + Math.random() * 20; 
+        targets.DINING[i*3+2] = center.z + r * Math.sin(theta);
+    }
+
+    // D. HEART - SMALLER
+    for(let i=0; i<PARTICLE_COUNT; i++) {
+        const t = Math.random() * Math.PI * 2;
+        const scale = 10; // Reduced from 15
+        const x = 16 * Math.pow(Math.sin(t), 3);
+        const y = 13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t);
+        
+        const thickness = 8 + Math.random() * 8;
+        
+        targets.HEART[i*3] = x * scale + (Math.random()-0.5)*thickness;
+        targets.HEART[i*3+1] = y * scale + (Math.random()-0.5)*thickness + 40; 
+        targets.HEART[i*3+2] = (Math.random()-0.5) * 40; 
+    }
+
+    // E. GIO
+    const txtCanvas = document.createElement('canvas');
+    txtCanvas.width = 600; 
+    txtCanvas.height = 300;
+    const ctx = txtCanvas.getContext('2d');
+    if (ctx) {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0,0,600,300);
+        ctx.fillStyle = '#fff';
+        ctx.font = '900 200px Roboto, Arial, sans-serif'; 
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('GIO', 300, 150);
+        
+        const imgData = ctx.getImageData(0,0,600,300);
+        const validPixels: number[] = [];
+        for(let y=0; y<300; y+=2) {
+            for(let x=0; x<600; x+=2) {
+                const idx = (y*600 + x)*4;
+                if (imgData.data[idx] > 128) validPixels.push(idx/4); 
+            }
+        }
+        for(let i=0; i<PARTICLE_COUNT; i++) {
+            if (validPixels.length > 0) {
+                const pxIndex = validPixels[Math.floor(Math.random() * validPixels.length)]; 
+                const pxX = pxIndex % 600;
+                const pxY = Math.floor(pxIndex / 600);
+                targets.GIO[i*3] = (pxX - 300) * 1.5;
+                targets.GIO[i*3+1] = -(pxY - 150) * 1.5;
+                targets.GIO[i*3+2] = (Math.random()-0.5) * 10; 
+            } else {
+                 targets.GIO[i*3] = 0; targets.GIO[i*3+1] = 0; targets.GIO[i*3+2] = 0;
+            }
+        }
+    }
+
+    return { targets, centers };
+};
 
 export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixedColors, ingredients, videoStream }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -103,10 +212,10 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
   const videoRef = useRef<HTMLVideoElement>(null);
   
   // Eye Physics (Relative to Camera)
-  // Adjusted AnchorY to lower eyes
+  // Reduced spacing: +/- 50 instead of 100
   const eyePhysicsRef = useRef([
-      { x: -100, y: 50, z: -200, vx: 0, vy: 0, vz: 0, anchorX: -150, anchorY: 80 }, 
-      { x: 100, y: 50, z: -200, vx: 0, vy: 0, vz: 0, anchorX: 150, anchorY: 80 }
+      { x: -50, y: 50, z: -200, vx: 0, vy: 0, vz: 0, anchorX: -50, anchorY: 80 }, 
+      { x: 50, y: 50, z: -200, vx: 0, vy: 0, vz: 0, anchorX: 50, anchorY: 80 }
   ]);
   
   // Gift Effect State
@@ -121,36 +230,61 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
   const timeRef = useRef(0);
   const dummyRef = useRef(new THREE.Object3D());
   const fistTriggeredRef = useRef(false);
+  const modeRef = useRef<VisualMode>('CHAOS');
+
+  // Keep modeRef in sync with mode state
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
 
   // --- 0. VISION SETUP ---
   useEffect(() => {
+    let isMounted = true;
     const setupVision = async () => {
         try {
             const vision = await FilesetResolver.forVisionTasks(
                 "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
             );
-            handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, {
-                baseOptions: {
-                    modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
-                    delegate: "GPU"
-                },
-                runningMode: "VIDEO",
-                numHands: 1
-            });
-            faceLandmarkerRef.current = await FaceLandmarker.createFromOptions(vision, {
-                baseOptions: {
-                    modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`,
-                    delegate: "GPU"
-                },
-                outputFaceBlendshapes: true,
-                runningMode: "VIDEO",
-                numFaces: 1
-            });
+            if (!isMounted) return;
+
+            // Parallel creation
+            const [hl, fl] = await Promise.all([
+                 HandLandmarker.createFromOptions(vision, {
+                    baseOptions: {
+                        modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
+                        delegate: "GPU"
+                    },
+                    runningMode: "VIDEO",
+                    numHands: 1
+                }),
+                 FaceLandmarker.createFromOptions(vision, {
+                    baseOptions: {
+                        modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`,
+                        delegate: "GPU"
+                    },
+                    outputFaceBlendshapes: true,
+                    runningMode: "VIDEO",
+                    numFaces: 1
+                })
+            ]);
+            
+            if (isMounted) {
+                handLandmarkerRef.current = hl;
+                faceLandmarkerRef.current = fl;
+            } else {
+                hl.close();
+                fl.close();
+            }
         } catch (e) {
             console.error("Vision Error", e);
         }
     };
     setupVision();
+    return () => {
+        isMounted = false;
+        handLandmarkerRef.current?.close();
+        faceLandmarkerRef.current?.close();
+    };
   }, []);
 
   // Sync Video
@@ -187,116 +321,6 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
       return { map, list };
   }, [ingredients]);
 
-  // --- 1. SHAPE GENERATORS ---
-  const generateShapes = (width: number, height: number) => {
-      const targets: Record<VisualMode, Float32Array> = {
-          CHAOS: new Float32Array(PARTICLE_COUNT * 3),
-          DROP: new Float32Array(PARTICLE_COUNT * 3),
-          DINING: new Float32Array(PARTICLE_COUNT * 3),
-          HEART: new Float32Array(PARTICLE_COUNT * 3),
-          GIO: new Float32Array(PARTICLE_COUNT * 3),
-      };
-
-      const randomSphere = (radius: number) => {
-          const u = Math.random();
-          const v = Math.random();
-          const theta = 2 * Math.PI * u;
-          const phi = Math.acos(2 * v - 1);
-          const r = Math.cbrt(Math.random()) * radius;
-          return {
-              x: r * Math.sin(phi) * Math.cos(theta),
-              y: r * Math.sin(phi) * Math.sin(theta),
-              z: r * Math.cos(phi)
-          };
-      };
-
-      // A. CHAOS
-      for(let i=0; i<PARTICLE_COUNT; i++) {
-          const p = randomSphere(600);
-          targets.CHAOS[i*3] = p.x;
-          targets.CHAOS[i*3+1] = p.y;
-          targets.CHAOS[i*3+2] = p.z;
-      }
-
-      // B. DROP
-      for(let i=0; i<PARTICLE_COUNT; i++) {
-          const angle = Math.random() * Math.PI * 2;
-          const r = Math.sqrt(Math.random()) * 600;
-          targets.DROP[i*3] = Math.cos(angle) * r;
-          targets.DROP[i*3+1] = -250; 
-          targets.DROP[i*3+2] = Math.sin(angle) * r;
-      }
-
-      // C. DINING
-      const centers: {x:number, y:number, z:number}[] = [];
-      clusterCentersRef.current = [];
-      for(let c=0; c<BOWL_COUNT; c++) {
-          const center = randomSphere(350);
-          centers.push(center);
-          clusterCentersRef.current.push(center);
-      }
-      for(let i=0; i<PARTICLE_COUNT; i++) {
-          const center = centers[i % BOWL_COUNT];
-          const r = Math.random() * 35;
-          const theta = Math.random() * Math.PI * 2;
-          targets.DINING[i*3] = center.x + r * Math.cos(theta);
-          targets.DINING[i*3+1] = center.y + Math.random() * 20; 
-          targets.DINING[i*3+2] = center.z + r * Math.sin(theta);
-      }
-
-      // D. HEART
-      for(let i=0; i<PARTICLE_COUNT; i++) {
-          const t = Math.random() * Math.PI * 2;
-          const scale = 15;
-          const x = 16 * Math.pow(Math.sin(t), 3);
-          const y = 13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t);
-          
-          const thickness = 10 + Math.random() * 10;
-          
-          targets.HEART[i*3] = x * scale + (Math.random()-0.5)*thickness;
-          targets.HEART[i*3+1] = y * scale + (Math.random()-0.5)*thickness + 50; 
-          targets.HEART[i*3+2] = (Math.random()-0.5) * 60; 
-      }
-
-      // E. GIO
-      const txtCanvas = document.createElement('canvas');
-      txtCanvas.width = 600; 
-      txtCanvas.height = 300;
-      const ctx = txtCanvas.getContext('2d');
-      if (ctx) {
-          ctx.fillStyle = '#000';
-          ctx.fillRect(0,0,600,300);
-          ctx.fillStyle = '#fff';
-          ctx.font = '900 200px Roboto, Arial, sans-serif'; 
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText('GIO', 300, 150);
-          
-          const imgData = ctx.getImageData(0,0,600,300);
-          const validPixels: number[] = [];
-          for(let y=0; y<300; y+=2) {
-              for(let x=0; x<600; x+=2) {
-                  const idx = (y*600 + x)*4;
-                  if (imgData.data[idx] > 128) validPixels.push(idx/4); 
-              }
-          }
-          for(let i=0; i<PARTICLE_COUNT; i++) {
-              if (validPixels.length > 0) {
-                  const pxIndex = validPixels[Math.floor(Math.random() * validPixels.length)]; 
-                  const pxX = pxIndex % 600;
-                  const pxY = Math.floor(pxIndex / 600);
-                  targets.GIO[i*3] = (pxX - 300) * 1.5;
-                  targets.GIO[i*3+1] = -(pxY - 150) * 1.5;
-                  targets.GIO[i*3+2] = (Math.random()-0.5) * 10; 
-              } else {
-                   targets.GIO[i*3] = 0; targets.GIO[i*3+1] = 0; targets.GIO[i*3+2] = 0;
-              }
-          }
-      }
-
-      return targets;
-  };
-
   // --- 2. INIT SCENE ---
   useEffect(() => {
     if (!containerRef.current || !canvasRef.current) return;
@@ -332,8 +356,11 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
     scene.add(rimLight);
 
     // --- MESHES ---
-    const targets = generateShapes(width, height);
+    // Generate shapes outside component and populate refs
+    const { targets, centers } = generateShapes(width, height);
     targetPositionsRef.current = targets;
+    clusterCentersRef.current = centers;
+    
     const positions = new Float32Array(PARTICLE_COUNT * 3);
     const vels = new Float32Array(PARTICLE_COUNT * 3);
 
@@ -434,13 +461,15 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
     camera.add(eyeGroup); // Key change: Attach to Camera
     eyeGroupRef.current = eyeGroup;
     
-    const eyeG = new THREE.SphereGeometry(25, 32, 32);
+    // REDUCED EYE SIZE (Radius 14)
+    const eyeG = new THREE.SphereGeometry(14, 32, 32);
     const eyeM = new THREE.MeshBasicMaterial({ color: 0xffffff });
     const pupM = new THREE.MeshBasicMaterial({ color: 0x000000 });
     const eyeL = new THREE.Mesh(eyeG, eyeM);
-    const pupilL = new THREE.Mesh(new THREE.SphereGeometry(10), pupM); pupilL.position.z = 22; eyeL.add(pupilL);
+    // PUPIL slightly smaller and adjusted Z
+    const pupilL = new THREE.Mesh(new THREE.SphereGeometry(6), pupM); pupilL.position.z = 12; eyeL.add(pupilL);
     const eyeR = new THREE.Mesh(eyeG, eyeM);
-    const pupilR = new THREE.Mesh(new THREE.SphereGeometry(10), pupM); pupilR.position.z = 22; eyeR.add(pupilR);
+    const pupilR = new THREE.Mesh(new THREE.SphereGeometry(6), pupM); pupilR.position.z = 12; eyeR.add(pupilR);
     eyeGroup.add(eyeL); eyeGroup.add(eyeR);
 
     // Thick Nerves - Also attach to Camera
@@ -448,7 +477,8 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
     camera.add(nervesGroup);
     nervesGroupRef.current = nervesGroup;
     
-    const nerveGeo = new THREE.CylinderGeometry(5, 2, 1, 8); 
+    // REDUCED NERVE THICKNESS to match smaller eyes
+    const nerveGeo = new THREE.CylinderGeometry(3, 1, 1, 8); 
     const nerveMat = new THREE.MeshPhongMaterial({ color: 0x991b1b, shininess: 30 });
     const nerveL = new THREE.Mesh(nerveGeo, nerveMat);
     const nerveR = new THREE.Mesh(nerveGeo, nerveMat);
@@ -477,7 +507,10 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
   // --- 3. ANIMATION LOOP ---
   useEffect(() => {
     const loop = () => {
-        if (!instancedMeshRef.current || !targetPositionsRef.current || !currentPositionsRef.current) return;
+        if (!instancedMeshRef.current || !targetPositionsRef.current || !currentPositionsRef.current) {
+            frameIdRef.current = requestAnimationFrame(loop);
+            return;
+        }
 
         timeRef.current += 0.01;
         const width = window.innerWidth;
@@ -486,61 +519,67 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
 
         // Vision
         if (handLandmarkerRef.current && videoRef.current && now - lastVideoTimeRef.current > 60) {
-            lastVideoTimeRef.current = now;
-            
-            // Hand
-            const res = handLandmarkerRef.current.detectForVideo(videoRef.current, now);
-            handResultsRef.current = res;
-            if (res.landmarks && res.landmarks.length > 0) {
-                const hand = res.landmarks[0];
-                const px = (1 - hand[9].x) * width; 
-                const py = hand[9].y * height;
-                
-                cursorScreenPosRef.current.x += (px - cursorScreenPosRef.current.x) * 0.3;
-                cursorScreenPosRef.current.y += (py - cursorScreenPosRef.current.y) * 0.3;
-                
-                mouseRef.current.x = (cursorScreenPosRef.current.x / width) * 2 - 1;
-                mouseRef.current.y = -(cursorScreenPosRef.current.y / height) * 2 + 1;
+            if (videoRef.current.readyState >= 2) { 
+              lastVideoTimeRef.current = now;
+              
+              try {
+                  // Hand
+                  const res = handLandmarkerRef.current.detectForVideo(videoRef.current, now);
+                  handResultsRef.current = res;
+                  if (res.landmarks && res.landmarks.length > 0) {
+                      const hand = res.landmarks[0];
+                      const px = (1 - hand[9].x) * width; 
+                      const py = hand[9].y * height;
+                      
+                      cursorScreenPosRef.current.x += (px - cursorScreenPosRef.current.x) * 0.3;
+                      cursorScreenPosRef.current.y += (py - cursorScreenPosRef.current.y) * 0.3;
+                      
+                      mouseRef.current.x = (cursorScreenPosRef.current.x / width) * 2 - 1;
+                      mouseRef.current.y = -(cursorScreenPosRef.current.y / height) * 2 + 1;
 
-                const tip = hand[12].y;
-                const pip = hand[10].y;
-                const fist = tip > pip;
-                setIsFist(fist);
+                      const tip = hand[12].y;
+                      const pip = hand[10].y;
+                      const fist = tip > pip;
+                      setIsFist(fist);
 
-                let hovered: string | null = null;
-                const hitTest = (ref: React.RefObject<HTMLButtonElement>, id: string) => {
-                    if(ref.current) {
-                        const rect = ref.current.getBoundingClientRect();
-                        const x = cursorScreenPosRef.current.x;
-                        const y = cursorScreenPosRef.current.y;
-                        if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
-                            hovered = id;
-                            if (fist && !fistTriggeredRef.current) {
-                                ref.current.click();
-                            }
-                        }
-                    }
-                };
-                
-                hitTest(switchBtnRef, 'switch');
-                hitTest(giftBtnRef, 'gift');
-                hitTest(restartBtnRef, 'restart');
-                setHoveredBtn(hovered);
+                      let hovered: string | null = null;
+                      const hitTest = (ref: React.RefObject<HTMLButtonElement>, id: string) => {
+                          if(ref.current) {
+                              const rect = ref.current.getBoundingClientRect();
+                              const x = cursorScreenPosRef.current.x;
+                              const y = cursorScreenPosRef.current.y;
+                              if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+                                  hovered = id;
+                                  if (fist && !fistTriggeredRef.current) {
+                                      ref.current.click();
+                                  }
+                              }
+                          }
+                      };
+                      
+                      hitTest(switchBtnRef, 'switch');
+                      hitTest(giftBtnRef, 'gift');
+                      hitTest(restartBtnRef, 'restart');
+                      setHoveredBtn(hovered);
 
-                if (fist && !fistTriggeredRef.current) {
-                    fistTriggeredRef.current = true;
-                    if (cursorScreenPosRef.current.x < 150 && cursorScreenPosRef.current.y > height - 100) {
-                        triggerLikes();
-                    }
-                } else if (!fist) {
-                    fistTriggeredRef.current = false;
-                }
-            }
+                      if (fist && !fistTriggeredRef.current) {
+                          fistTriggeredRef.current = true;
+                          if (cursorScreenPosRef.current.x < 150 && cursorScreenPosRef.current.y > height - 100) {
+                              triggerLikes();
+                          }
+                      } else if (!fist) {
+                          fistTriggeredRef.current = false;
+                      }
+                  }
 
-            // Face
-            if (faceLandmarkerRef.current) {
-                 const faceRes = faceLandmarkerRef.current.detectForVideo(videoRef.current, now);
-                 faceResultsRef.current = faceRes;
+                  // Face
+                  if (faceLandmarkerRef.current) {
+                       const faceRes = faceLandmarkerRef.current.detectForVideo(videoRef.current, now);
+                       faceResultsRef.current = faceRes;
+                  }
+              } catch (e) {
+                  console.warn("Vision detection error", e);
+              }
             }
         }
 
@@ -552,7 +591,7 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
             if (activeGiftEffectRef.current.timer <= 0) activeGiftEffectRef.current = null;
         }
 
-        const target = targetPositionsRef.current[mode];
+        const target = targetPositionsRef.current[modeRef.current];
         const positions = currentPositionsRef.current;
         const vels = velocitiesRef.current!;
         const mesh = instancedMeshRef.current;
@@ -580,7 +619,7 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
         // Bowls
         if (bowlMesh) {
              for(let i=0; i<BOWL_COUNT; i++) {
-                 if (mode === 'DINING') {
+                 if (modeRef.current === 'DINING') {
                      const center = clusterCentersRef.current[i];
                      if(center) {
                          dummy.position.set(center.x, center.y - 10, center.z);
@@ -611,7 +650,7 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
 
             let k = 0.02;
             
-            if (mode === 'DROP') {
+            if (modeRef.current === 'DROP') {
                 k = 0; 
                 vels[idx+1] -= 2.0; // Gravity
                 if (py < -250) {
@@ -668,7 +707,7 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
                 }
             }
 
-            const friction = mode === 'DROP' ? 0.99 : 0.93; 
+            const friction = modeRef.current === 'DROP' ? 0.99 : 0.93; 
             vels[idx] *= friction;
             vels[idx+1] *= friction;
             vels[idx+2] *= friction;
@@ -737,7 +776,7 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
 
                 // Update Thick Nerve (Cylinder)
                 const nerve = nervesGroup.children[i];
-                // Anchor point is higher up off screen
+                // Anchor point is higher up off screen, adjusted to new width
                 const start = new THREE.Vector3(eye.anchorX, 400, -250); 
                 const end = new THREE.Vector3(eye.x, eye.y, eye.z);
                 const distance = start.distanceTo(end);
@@ -758,7 +797,7 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
 
     frameIdRef.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(frameIdRef.current);
-  }, [mode]);
+  }, []);
 
   // --- 4. CHAT GENERATOR ---
   useEffect(() => {

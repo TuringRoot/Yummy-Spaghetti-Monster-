@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { GameStage } from './types';
 import { WebcamBackground } from './components/WebcamBackground';
 import { StageIntro } from './components/StageIntro';
@@ -35,37 +35,37 @@ const App: React.FC = () => {
     initWebcam();
   }, []);
 
-  const handleStart = () => {
+  const handleStart = useCallback(() => {
     // Resume audio context on first user interaction
     audio.init();
     audio.playSFX('click');
     setStage(GameStage.COOKING);
-  };
+  }, []);
 
-  const handleCookingComplete = (ingredients: string[]) => {
+  const handleCookingComplete = useCallback((ingredients: string[]) => {
     setCollectedIngredients(ingredients);
     // Short transition effect
     setStage(GameStage.TRANSITION_TO_FEEDING);
     setTimeout(() => setStage(GameStage.FEEDING), 2000);
-  };
+  }, []);
 
-  const handleFeedingComplete = (colors: string[]) => {
+  const handleFeedingComplete = useCallback((colors: string[]) => {
       setFinalColors(colors);
       // Go to Explosion first
       setStage(GameStage.EXPLOSION);
-  };
+  }, []);
 
-  const handleExplosionComplete = () => {
+  const handleExplosionComplete = useCallback(() => {
       audio.playSFX('explosion');
       setStage(GameStage.AFTERMATH);
-  }
+  }, []);
 
-  const handleRestart = () => {
+  const handleRestart = useCallback(() => {
       audio.playSFX('click');
       setStage(GameStage.INTRO);
       setCollectedIngredients([]);
       setFinalColors(['#fbbf24']);
-  };
+  }, []);
 
   return (
     <div className="relative w-screen h-screen bg-neutral-900 overflow-hidden select-none">

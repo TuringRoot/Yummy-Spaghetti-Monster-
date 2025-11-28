@@ -1,7 +1,7 @@
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { BAD_INGREDIENTS, GOOD_INGREDIENTS, Ingredient, IngredientType } from '../types';
-import { FilesetResolver, HandLandmarker, DrawingUtils } from '@mediapipe/tasks-vision';
+import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 import { audio } from '../utils/audio';
 
 interface StageCookingProps {
@@ -58,6 +58,302 @@ interface AttachedBubble {
     isUrgent: boolean;
 }
 
+// --- Helper Functions Moved Outside Component ---
+
+const spawnIngredient = (width: number) => {
+  const isGood = Math.random() > 0.4; 
+  const pool = isGood ? GOOD_INGREDIENTS : BAD_INGREDIENTS;
+  const item = pool[Math.floor(Math.random() * pool.length)];
+  
+  return {
+    id: Date.now() + Math.random(),
+    x: Math.random() * (width - 80) + 40,
+    y: -60,
+    vy: (4.0 + Math.random() * 1.5) * 1.3, // 1.3x Speed
+    vx: (Math.random() - 0.5) * 1.0,
+    rotation: Math.random() * 360,
+    rotationSpeed: (Math.random() - 0.5) * 0.1,
+    emoji: item.emoji,
+    name: item.name,
+    type: isGood ? IngredientType.GOOD : IngredientType.BAD
+  };
+};
+
+const drawDynamicFire = (ctx: CanvasRenderingContext2D, x: number, y: number, scale: number, time: number) => {
+    const t = time * 0.2;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(scale, scale);
+    
+    ctx.fillStyle = '#fef08a';
+    ctx.beginPath();
+    ctx.moveTo(-10, 0);
+    ctx.quadraticCurveTo(0, -30 - Math.sin(t*3)*10, 10, 0);
+    ctx.quadraticCurveTo(0, 10, -10, 0);
+    ctx.fill();
+
+    ctx.fillStyle = '#f97316';
+    ctx.beginPath();
+    ctx.moveTo(-15, 5);
+    ctx.quadraticCurveTo(-5, -40 - Math.cos(t*2.5)*15, 0, -20);
+    ctx.quadraticCurveTo(5, -45 - Math.sin(t*2)*15, 15, 5);
+    ctx.quadraticCurveTo(0, 20, -15, 5);
+    ctx.fill();
+
+    ctx.fillStyle = '#ef4444';
+    ctx.beginPath();
+    ctx.moveTo(-20, 10);
+    ctx.quadraticCurveTo(-10, -30 - Math.sin(t*1.5)*10, -5, -15);
+    ctx.quadraticCurveTo(0, -50 - Math.cos(t*3)*20, 5, -15);
+    ctx.quadraticCurveTo(10, -35 - Math.sin(t*2)*10, 20, 10);
+    ctx.quadraticCurveTo(0, 30, -20, 10);
+    ctx.fill();
+
+    ctx.restore();
+};
+
+const drawDetailedStudent = (ctx: CanvasRenderingContext2D, member: CrowdMember, x: number, y: number, size: number, time: number) => {
+    ctx.save();
+    ctx.translate(x, y);
+
+    // --- 1. ALWAYS DRAW NORMAL BODY ---
+    ctx.save();
+    const bob = Math.sin(time * 0.2 + member.walkOffset) * 3;
+    ctx.translate(0, bob);
+    const direction = member.vx < 0 ? -1 : 1;
+    ctx.scale(direction, 1);
+
+    // Shadow
+    ctx.scale(1, 0.3);
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.beginPath(); ctx.arc(0, size*3.2, size*0.3, 0, Math.PI*2); ctx.fill();
+    ctx.scale(1, 3.33);
+
+    // Legs
+    const legAngle = Math.sin(time * 0.2 + member.walkOffset) * 0.8;
+    ctx.strokeStyle = member.pantsColor;
+    ctx.lineWidth = size * 0.18;
+    ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(0, size * 0.5); ctx.lineTo(Math.sin(legAngle) * size * 0.25, size * 0.95); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, size * 0.5); ctx.lineTo(Math.sin(-legAngle) * size * 0.25, size * 0.95); ctx.stroke();
+
+    // Body
+    const bodyGrad = ctx.createRadialGradient(-size*0.1, size*0.2, 0, 0, size*0.3, size*0.5);
+    bodyGrad.addColorStop(0, member.shirtColor);
+    bodyGrad.addColorStop(1, 'black');
+    ctx.fillStyle = bodyGrad;
+    ctx.beginPath();
+    ctx.moveTo(-size*0.15, size*0.1); 
+    ctx.lineTo(size*0.15, size*0.1);
+    ctx.lineTo(size*0.22, size*0.55);
+    ctx.quadraticCurveTo(0, size*0.6, -size*0.22, size*0.55);
+    ctx.fill();
+
+    // Shirt Details
+    if (member.clothingPattern === 'striped') {
+      ctx.strokeStyle = 'rgba(255,255,255,0.2)'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(-size*0.1, size*0.2); ctx.lineTo(size*0.1, size*0.2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-size*0.12, size*0.35); ctx.lineTo(size*0.12, size*0.35); ctx.stroke();
+    } else if (member.clothingPattern === 'logo') {
+      ctx.fillStyle = 'rgba(255,255,255,0.4)';
+      ctx.beginPath(); ctx.arc(0, size*0.3, size*0.06, 0, Math.PI*2); ctx.fill();
+    }
+
+    // Backpack
+    ctx.fillStyle = '#4c1d95';
+    ctx.beginPath(); ctx.roundRect(-size*0.42, size*0.12, size*0.2, size*0.4, 8); ctx.fill();
+    ctx.fillStyle = '#6d28d9'; // Pocket
+    ctx.beginPath(); ctx.roundRect(-size*0.4, size*0.35, size*0.16, size*0.15, 4); ctx.fill();
+    
+    // Arms
+    ctx.strokeStyle = member.skinColor;
+    ctx.lineWidth = size * 0.12;
+    ctx.beginPath(); ctx.moveTo(-size*0.1, size*0.15); ctx.lineTo(-size*0.25, size*0.45); ctx.stroke();
+    
+    ctx.strokeStyle = member.shirtColor; 
+    ctx.beginPath(); ctx.moveTo(size*0.1, size*0.15); ctx.lineTo(size*0.22, size*0.35); ctx.stroke();
+    ctx.strokeStyle = member.skinColor;
+    ctx.beginPath(); ctx.moveTo(size*0.22, size*0.35); ctx.lineTo(size*0.35, size*0.3); ctx.stroke();
+    
+    // Book
+    ctx.fillStyle = '#2563eb';
+    ctx.save();
+    ctx.translate(size*0.35, size*0.3);
+    ctx.rotate(-0.3);
+    ctx.fillRect(-size*0.05, -size*0.15, size*0.25, size*0.3);
+    // Book Pages
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(-size*0.05 + 2, -size*0.15 + 2, size*0.25 - 4, size*0.3 - 4);
+    ctx.restore();
+
+    // Head
+    ctx.fillStyle = member.skinColor;
+    ctx.beginPath(); ctx.ellipse(0, -size*0.05, size*0.22, size*0.24, 0, 0, Math.PI*2); ctx.fill();
+
+    // Hair Rendering Helper
+    const drawHair = () => {
+        ctx.fillStyle = member.hairColor;
+        if (member.hatType === 'cap') {
+            ctx.fillStyle = '#1f2937';
+            ctx.beginPath(); ctx.arc(0, -size*0.15, size*0.24, Math.PI, 0); ctx.fill();
+            ctx.fillRect(0, -size*0.15, size*0.35, size*0.05); // Brim
+        } else if (member.hatType === 'beanie') {
+            ctx.fillStyle = '#b91c1c';
+            ctx.beginPath(); ctx.ellipse(0, -size*0.18, size*0.24, size*0.18, 0, Math.PI, 0); ctx.fill();
+            ctx.fillRect(-size*0.24, -size*0.18, size*0.48, size*0.05);
+        } else {
+            // Dynamic Hair
+            if (member.hairStyle === 'spiky') {
+               ctx.beginPath();
+               ctx.moveTo(-size*0.2, -size*0.1);
+               ctx.lineTo(-size*0.25, -size*0.35); ctx.lineTo(-size*0.1, -size*0.25);
+               ctx.lineTo(0, -size*0.38); ctx.lineTo(size*0.1, -size*0.25);
+               ctx.lineTo(size*0.25, -size*0.35); ctx.lineTo(size*0.2, -size*0.1);
+               ctx.fill();
+               ctx.beginPath(); ctx.arc(0, -size*0.1, size*0.22, Math.PI, 0); ctx.fill();
+            } else if (member.hairStyle === 'long') {
+               ctx.beginPath(); ctx.arc(0, -size*0.1, size*0.24, Math.PI, 0); ctx.fill();
+               ctx.fillRect(-size*0.24, -size*0.1, size*0.48, size*0.25);
+            } else if (member.hairStyle === 'buns') {
+               ctx.beginPath(); ctx.arc(0, -size*0.1, size*0.24, Math.PI, 0); ctx.fill();
+               ctx.beginPath(); ctx.arc(-size*0.25, -size*0.2, size*0.1, 0, Math.PI*2); ctx.fill();
+               ctx.beginPath(); ctx.arc(size*0.25, -size*0.2, size*0.1, 0, Math.PI*2); ctx.fill();
+            } else if (member.hairStyle === 'pigtails') {
+               ctx.beginPath(); ctx.arc(0, -size*0.1, size*0.24, Math.PI, 0); ctx.fill();
+               ctx.fillRect(-size*0.28, -size*0.05, size*0.1, size*0.25);
+               ctx.fillRect(size*0.18, -size*0.05, size*0.1, size*0.25);
+            } else { // short/bob
+               ctx.beginPath(); ctx.arc(0, -size*0.1, size*0.25, Math.PI, 0); ctx.fill();
+            }
+        }
+    };
+    
+    drawHair();
+
+    // Beautiful Eyes
+    const eyeY = -size*0.05;
+    const eyeSize = 4.5; // Bigger
+    const eyeSpacing = 7;
+    
+    // Sclera
+    ctx.fillStyle = 'white';
+    ctx.beginPath(); ctx.ellipse(-eyeSpacing, eyeY, eyeSize, eyeSize*1.1, 0, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(eyeSpacing, eyeY, eyeSize, eyeSize*1.1, 0, 0, Math.PI*2); ctx.fill();
+    
+    // Iris
+    ctx.fillStyle = member.eyeColor;
+    ctx.beginPath(); ctx.arc(-eyeSpacing, eyeY, eyeSize*0.65, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(eyeSpacing, eyeY, eyeSize*0.65, 0, Math.PI*2); ctx.fill();
+    
+    // Pupil
+    ctx.fillStyle = 'black';
+    ctx.beginPath(); ctx.arc(-eyeSpacing, eyeY, eyeSize*0.3, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(eyeSpacing, eyeY, eyeSize*0.3, 0, Math.PI*2); ctx.fill();
+    
+    // Highlights (Sparkle)
+    ctx.fillStyle = 'white';
+    ctx.beginPath(); ctx.arc(-eyeSpacing-1.5, eyeY-1.5, eyeSize*0.25, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(eyeSpacing-1.5, eyeY-1.5, eyeSize*0.25, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(-eyeSpacing+1, eyeY+1, eyeSize*0.1, 0, Math.PI*2); ctx.fill(); 
+
+    if (member.hasGlasses) {
+        ctx.strokeStyle = '#333'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(-eyeSpacing, eyeY, eyeSize*1.6, 0, Math.PI*2); ctx.stroke();
+        ctx.beginPath(); ctx.arc(eyeSpacing, eyeY, eyeSize*1.6, 0, Math.PI*2); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(-eyeSpacing+eyeSize*1.6, eyeY); ctx.lineTo(eyeSpacing-eyeSize*1.6, eyeY); ctx.stroke();
+        // Arms
+        ctx.beginPath(); ctx.moveTo(-eyeSpacing-eyeSize*1.6, eyeY); ctx.lineTo(-size*0.2, eyeY-2); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(eyeSpacing+eyeSize*1.6, eyeY); ctx.lineTo(size*0.2, eyeY-2); ctx.stroke();
+    }
+
+    ctx.restore(); // End Normal Body
+
+    // --- 2. IF ANGRY, DRAW POPUP AVATAR ABOVE ---
+    if (member.isAngry) {
+        ctx.save();
+        
+        // Move bubble higher so it floats above head
+        const bubbleY = -size * 1.1;
+
+        drawDynamicFire(ctx, 0, bubbleY - size*0.2, 1.2, time);
+        
+        ctx.beginPath();
+        ctx.arc(0, bubbleY, size*0.5, 0, Math.PI*2);
+        ctx.fillStyle = '#fecaca'; 
+        ctx.fill();
+        ctx.strokeStyle = '#ef4444';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        
+        ctx.save();
+        ctx.clip(); 
+        
+        // Draw magnified head inside bubble
+        // Center the head drawing inside the bubble
+        ctx.translate(0, bubbleY + size*0.2);
+        ctx.scale(1.5, 1.5);
+        
+        // Head
+        ctx.fillStyle = member.skinColor;
+        ctx.beginPath(); ctx.ellipse(0, -size*0.05, size*0.22, size*0.24, 0, 0, Math.PI*2); ctx.fill();
+        
+        // Angry Face
+        ctx.strokeStyle = 'black'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(-6, -8); ctx.lineTo(-2, -4); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(6, -8); ctx.lineTo(2, -4); ctx.stroke();
+        ctx.fillStyle = 'white';
+        ctx.beginPath(); ctx.arc(-5, -2, 3, 0, Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.arc(5, -2, 3, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = 'black';
+        ctx.beginPath(); ctx.arc(-5, -2, 1, 0, Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.arc(5, -2, 1, 0, Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.arc(0, 5, 4, Math.PI, 0); ctx.stroke();
+
+        // Reuse Hair Logic for avatar
+        const drawAvatarHair = () => {
+             ctx.fillStyle = member.hairColor;
+             if (member.hatType === 'cap') {
+                ctx.fillStyle = '#1f2937';
+                ctx.beginPath(); ctx.arc(0, -size*0.15, size*0.24, Math.PI, 0); ctx.fill();
+                ctx.fillRect(0, -size*0.15, size*0.35, size*0.05); 
+            } else if (member.hatType === 'beanie') {
+                ctx.fillStyle = '#b91c1c';
+                ctx.beginPath(); ctx.ellipse(0, -size*0.18, size*0.24, size*0.18, 0, Math.PI, 0); ctx.fill();
+                ctx.fillRect(-size*0.24, -size*0.18, size*0.48, size*0.05);
+            } else {
+                ctx.fillStyle = member.hairColor;
+                 if (member.hairStyle === 'spiky') {
+                   ctx.beginPath(); ctx.moveTo(-size*0.2, -size*0.1);
+                   ctx.lineTo(-size*0.25, -size*0.35); ctx.lineTo(-size*0.1, -size*0.25);
+                   ctx.lineTo(0, -size*0.38); ctx.lineTo(size*0.1, -size*0.25);
+                   ctx.lineTo(size*0.25, -size*0.35); ctx.lineTo(size*0.2, -size*0.1);
+                   ctx.fill();
+                   ctx.beginPath(); ctx.arc(0, -size*0.1, size*0.22, Math.PI, 0); ctx.fill();
+                } else if (member.hairStyle === 'long') {
+                   ctx.beginPath(); ctx.arc(0, -size*0.1, size*0.24, Math.PI, 0); ctx.fill();
+                   ctx.fillRect(-size*0.24, -size*0.1, size*0.48, size*0.25);
+                } else if (member.hairStyle === 'buns') {
+                   ctx.beginPath(); ctx.arc(0, -size*0.1, size*0.24, Math.PI, 0); ctx.fill();
+                   ctx.beginPath(); ctx.arc(-size*0.25, -size*0.2, size*0.1, 0, Math.PI*2); ctx.fill();
+                   ctx.beginPath(); ctx.arc(size*0.25, -size*0.2, size*0.1, 0, Math.PI*2); ctx.fill();
+                } else if (member.hairStyle === 'pigtails') {
+                   ctx.beginPath(); ctx.arc(0, -size*0.1, size*0.24, Math.PI, 0); ctx.fill();
+                   ctx.fillRect(-size*0.28, -size*0.05, size*0.1, size*0.25);
+                   ctx.fillRect(size*0.18, -size*0.05, size*0.1, size*0.25);
+                } else { 
+                   ctx.beginPath(); ctx.arc(0, -size*0.1, size*0.25, Math.PI, 0); ctx.fill();
+                }
+            }
+        };
+        drawAvatarHair();
+        
+        ctx.restore(); // End Clip
+        ctx.restore(); // End Avatar transform
+    }
+
+    ctx.restore(); // End Main
+};
+
 export const StageCooking: React.FC<StageCookingProps> = ({ onComplete, videoStream }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -67,6 +363,7 @@ export const StageCooking: React.FC<StageCookingProps> = ({ onComplete, videoStr
   const [visionReady, setVisionReady] = useState(false);
   
   const potActiveRef = useRef(false);
+  const isMouseDownRef = useRef(false);
   const ingredientsRef = useRef<Ingredient[]>([]);
   const steamRef = useRef<SteamParticle[]>([]);
   const textParticlesRef = useRef<TextParticle[]>([]);
@@ -91,15 +388,18 @@ export const StageCooking: React.FC<StageCookingProps> = ({ onComplete, videoStr
   const lastVideoTimeRef = useRef(-1);
   const handResultsRef = useRef<any>(null);
 
-  // Initialize MediaPipe Hands
+  // Initialize MediaPipe Hands with improved cleanup
   useEffect(() => {
+    let isMounted = true;
     const setupVision = async () => {
         try {
-            console.log("Loading MediaPipe Hands...");
             const vision = await FilesetResolver.forVisionTasks(
                 "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
             );
-            handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, {
+            
+            if (!isMounted) return;
+
+            const landmarker = await HandLandmarker.createFromOptions(vision, {
                 baseOptions: {
                     modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
                     delegate: "GPU"
@@ -107,13 +407,22 @@ export const StageCooking: React.FC<StageCookingProps> = ({ onComplete, videoStr
                 runningMode: "VIDEO",
                 numHands: 1
             });
-            console.log("MediaPipe Hands loaded!");
-            setVisionReady(true);
+            
+            if (isMounted) {
+                handLandmarkerRef.current = landmarker;
+                setVisionReady(true);
+            } else {
+                landmarker.close();
+            }
         } catch (e) {
             console.error("Failed to load MediaPipe HandLandmarker", e);
         }
     };
     setupVision();
+    return () => {
+        isMounted = false;
+        handLandmarkerRef.current?.close();
+    };
   }, []);
 
   // Sync Video Stream for processing
@@ -214,26 +523,7 @@ export const StageCooking: React.FC<StageCookingProps> = ({ onComplete, videoStr
     return () => clearInterval(interval);
   }, []);
 
-  const spawnIngredient = (width: number) => {
-    const isGood = Math.random() > 0.4; 
-    const pool = isGood ? GOOD_INGREDIENTS : BAD_INGREDIENTS;
-    const item = pool[Math.floor(Math.random() * pool.length)];
-    
-    return {
-      id: Date.now() + Math.random(),
-      x: Math.random() * (width - 80) + 40,
-      y: -60,
-      vy: (4.0 + Math.random() * 1.5) * 1.3, // 1.3x Speed
-      vx: (Math.random() - 0.5) * 1.0,
-      rotation: Math.random() * 360,
-      rotationSpeed: (Math.random() - 0.5) * 0.1,
-      emoji: item.emoji,
-      name: item.name,
-      type: isGood ? IngredientType.GOOD : IngredientType.BAD
-    };
-  };
-
-  const spawnSteam = (x: number, y: number) => {
+  const spawnSteam = useCallback((x: number, y: number) => {
       for(let i=0; i<8; i++) {
           steamRef.current.push({
               id: Math.random(),
@@ -245,9 +535,9 @@ export const StageCooking: React.FC<StageCookingProps> = ({ onComplete, videoStr
               alpha: 0.5 + Math.random() * 0.3
           });
       }
-  };
+  }, []);
 
-  const spawnTextFeedback = (x: number, y: number, text: string, color: string) => {
+  const spawnTextFeedback = useCallback((x: number, y: number, text: string, color: string) => {
       textParticlesRef.current.push({
           id: Math.random(),
           x: x,
@@ -258,279 +548,7 @@ export const StageCooking: React.FC<StageCookingProps> = ({ onComplete, videoStr
           vy: -2,
           scale: 1.0
       });
-  };
-
-  const drawDynamicFire = (ctx: CanvasRenderingContext2D, x: number, y: number, scale: number) => {
-      const t = timeRef.current * 0.2;
-      ctx.save();
-      ctx.translate(x, y);
-      ctx.scale(scale, scale);
-      
-      ctx.fillStyle = '#fef08a';
-      ctx.beginPath();
-      ctx.moveTo(-10, 0);
-      ctx.quadraticCurveTo(0, -30 - Math.sin(t*3)*10, 10, 0);
-      ctx.quadraticCurveTo(0, 10, -10, 0);
-      ctx.fill();
-
-      ctx.fillStyle = '#f97316';
-      ctx.beginPath();
-      ctx.moveTo(-15, 5);
-      ctx.quadraticCurveTo(-5, -40 - Math.cos(t*2.5)*15, 0, -20);
-      ctx.quadraticCurveTo(5, -45 - Math.sin(t*2)*15, 15, 5);
-      ctx.quadraticCurveTo(0, 20, -15, 5);
-      ctx.fill();
-
-      ctx.fillStyle = '#ef4444';
-      ctx.beginPath();
-      ctx.moveTo(-20, 10);
-      ctx.quadraticCurveTo(-10, -30 - Math.sin(t*1.5)*10, -5, -15);
-      ctx.quadraticCurveTo(0, -50 - Math.cos(t*3)*20, 5, -15);
-      ctx.quadraticCurveTo(10, -35 - Math.sin(t*2)*10, 20, 10);
-      ctx.quadraticCurveTo(0, 30, -20, 10);
-      ctx.fill();
-
-      ctx.restore();
-  };
-
-  const drawDetailedStudent = (ctx: CanvasRenderingContext2D, member: CrowdMember, x: number, y: number, size: number) => {
-      ctx.save();
-      ctx.translate(x, y);
-
-      // --- 1. ALWAYS DRAW NORMAL BODY ---
-      ctx.save();
-      const bob = Math.sin(timeRef.current * 0.2 + member.walkOffset) * 3;
-      ctx.translate(0, bob);
-      const direction = member.vx < 0 ? -1 : 1;
-      ctx.scale(direction, 1);
-
-      // Shadow
-      ctx.scale(1, 0.3);
-      ctx.fillStyle = 'rgba(0,0,0,0.3)';
-      ctx.beginPath(); ctx.arc(0, size*3.2, size*0.3, 0, Math.PI*2); ctx.fill();
-      ctx.scale(1, 3.33);
-
-      // Legs
-      const legAngle = Math.sin(timeRef.current * 0.2 + member.walkOffset) * 0.8;
-      ctx.strokeStyle = member.pantsColor;
-      ctx.lineWidth = size * 0.18;
-      ctx.lineCap = 'round';
-      ctx.beginPath(); ctx.moveTo(0, size * 0.5); ctx.lineTo(Math.sin(legAngle) * size * 0.25, size * 0.95); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(0, size * 0.5); ctx.lineTo(Math.sin(-legAngle) * size * 0.25, size * 0.95); ctx.stroke();
-
-      // Body
-      const bodyGrad = ctx.createRadialGradient(-size*0.1, size*0.2, 0, 0, size*0.3, size*0.5);
-      bodyGrad.addColorStop(0, member.shirtColor);
-      bodyGrad.addColorStop(1, 'black');
-      ctx.fillStyle = bodyGrad;
-      ctx.beginPath();
-      ctx.moveTo(-size*0.15, size*0.1); 
-      ctx.lineTo(size*0.15, size*0.1);
-      ctx.lineTo(size*0.22, size*0.55);
-      ctx.quadraticCurveTo(0, size*0.6, -size*0.22, size*0.55);
-      ctx.fill();
-
-      // Shirt Details
-      if (member.clothingPattern === 'striped') {
-        ctx.strokeStyle = 'rgba(255,255,255,0.2)'; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.moveTo(-size*0.1, size*0.2); ctx.lineTo(size*0.1, size*0.2); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(-size*0.12, size*0.35); ctx.lineTo(size*0.12, size*0.35); ctx.stroke();
-      } else if (member.clothingPattern === 'logo') {
-        ctx.fillStyle = 'rgba(255,255,255,0.4)';
-        ctx.beginPath(); ctx.arc(0, size*0.3, size*0.06, 0, Math.PI*2); ctx.fill();
-      }
-
-      // Backpack
-      ctx.fillStyle = '#4c1d95';
-      ctx.beginPath(); ctx.roundRect(-size*0.42, size*0.12, size*0.2, size*0.4, 8); ctx.fill();
-      ctx.fillStyle = '#6d28d9'; // Pocket
-      ctx.beginPath(); ctx.roundRect(-size*0.4, size*0.35, size*0.16, size*0.15, 4); ctx.fill();
-      
-      // Arms
-      ctx.strokeStyle = member.skinColor;
-      ctx.lineWidth = size * 0.12;
-      ctx.beginPath(); ctx.moveTo(-size*0.1, size*0.15); ctx.lineTo(-size*0.25, size*0.45); ctx.stroke();
-      
-      ctx.strokeStyle = member.shirtColor; 
-      ctx.beginPath(); ctx.moveTo(size*0.1, size*0.15); ctx.lineTo(size*0.22, size*0.35); ctx.stroke();
-      ctx.strokeStyle = member.skinColor;
-      ctx.beginPath(); ctx.moveTo(size*0.22, size*0.35); ctx.lineTo(size*0.35, size*0.3); ctx.stroke();
-      
-      // Book
-      ctx.fillStyle = '#2563eb';
-      ctx.save();
-      ctx.translate(size*0.35, size*0.3);
-      ctx.rotate(-0.3);
-      ctx.fillRect(-size*0.05, -size*0.15, size*0.25, size*0.3);
-      // Book Pages
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(-size*0.05 + 2, -size*0.15 + 2, size*0.25 - 4, size*0.3 - 4);
-      ctx.restore();
-
-      // Head
-      ctx.fillStyle = member.skinColor;
-      ctx.beginPath(); ctx.ellipse(0, -size*0.05, size*0.22, size*0.24, 0, 0, Math.PI*2); ctx.fill();
-
-      // Hair Rendering Helper
-      const drawHair = () => {
-          ctx.fillStyle = member.hairColor;
-          if (member.hatType === 'cap') {
-              ctx.fillStyle = '#1f2937';
-              ctx.beginPath(); ctx.arc(0, -size*0.15, size*0.24, Math.PI, 0); ctx.fill();
-              ctx.fillRect(0, -size*0.15, size*0.35, size*0.05); // Brim
-          } else if (member.hatType === 'beanie') {
-              ctx.fillStyle = '#b91c1c';
-              ctx.beginPath(); ctx.ellipse(0, -size*0.18, size*0.24, size*0.18, 0, Math.PI, 0); ctx.fill();
-              ctx.fillRect(-size*0.24, -size*0.18, size*0.48, size*0.05);
-          } else {
-              // Dynamic Hair
-              if (member.hairStyle === 'spiky') {
-                 ctx.beginPath();
-                 ctx.moveTo(-size*0.2, -size*0.1);
-                 ctx.lineTo(-size*0.25, -size*0.35); ctx.lineTo(-size*0.1, -size*0.25);
-                 ctx.lineTo(0, -size*0.38); ctx.lineTo(size*0.1, -size*0.25);
-                 ctx.lineTo(size*0.25, -size*0.35); ctx.lineTo(size*0.2, -size*0.1);
-                 ctx.fill();
-                 ctx.beginPath(); ctx.arc(0, -size*0.1, size*0.22, Math.PI, 0); ctx.fill();
-              } else if (member.hairStyle === 'long') {
-                 ctx.beginPath(); ctx.arc(0, -size*0.1, size*0.24, Math.PI, 0); ctx.fill();
-                 ctx.fillRect(-size*0.24, -size*0.1, size*0.48, size*0.25);
-              } else if (member.hairStyle === 'buns') {
-                 ctx.beginPath(); ctx.arc(0, -size*0.1, size*0.24, Math.PI, 0); ctx.fill();
-                 ctx.beginPath(); ctx.arc(-size*0.25, -size*0.2, size*0.1, 0, Math.PI*2); ctx.fill();
-                 ctx.beginPath(); ctx.arc(size*0.25, -size*0.2, size*0.1, 0, Math.PI*2); ctx.fill();
-              } else if (member.hairStyle === 'pigtails') {
-                 ctx.beginPath(); ctx.arc(0, -size*0.1, size*0.24, Math.PI, 0); ctx.fill();
-                 ctx.fillRect(-size*0.28, -size*0.05, size*0.1, size*0.25);
-                 ctx.fillRect(size*0.18, -size*0.05, size*0.1, size*0.25);
-              } else { // short/bob
-                 ctx.beginPath(); ctx.arc(0, -size*0.1, size*0.25, Math.PI, 0); ctx.fill();
-              }
-          }
-      };
-      
-      drawHair();
-
-      // Beautiful Eyes
-      const eyeY = -size*0.05;
-      const eyeSize = 4.5; // Bigger
-      const eyeSpacing = 7;
-      
-      // Sclera
-      ctx.fillStyle = 'white';
-      ctx.beginPath(); ctx.ellipse(-eyeSpacing, eyeY, eyeSize, eyeSize*1.1, 0, 0, Math.PI*2); ctx.fill();
-      ctx.beginPath(); ctx.ellipse(eyeSpacing, eyeY, eyeSize, eyeSize*1.1, 0, 0, Math.PI*2); ctx.fill();
-      
-      // Iris
-      ctx.fillStyle = member.eyeColor;
-      ctx.beginPath(); ctx.arc(-eyeSpacing, eyeY, eyeSize*0.65, 0, Math.PI*2); ctx.fill();
-      ctx.beginPath(); ctx.arc(eyeSpacing, eyeY, eyeSize*0.65, 0, Math.PI*2); ctx.fill();
-      
-      // Pupil
-      ctx.fillStyle = 'black';
-      ctx.beginPath(); ctx.arc(-eyeSpacing, eyeY, eyeSize*0.3, 0, Math.PI*2); ctx.fill();
-      ctx.beginPath(); ctx.arc(eyeSpacing, eyeY, eyeSize*0.3, 0, Math.PI*2); ctx.fill();
-      
-      // Highlights (Sparkle)
-      ctx.fillStyle = 'white';
-      ctx.beginPath(); ctx.arc(-eyeSpacing-1.5, eyeY-1.5, eyeSize*0.25, 0, Math.PI*2); ctx.fill();
-      ctx.beginPath(); ctx.arc(eyeSpacing-1.5, eyeY-1.5, eyeSize*0.25, 0, Math.PI*2); ctx.fill();
-      ctx.beginPath(); ctx.arc(-eyeSpacing+1, eyeY+1, eyeSize*0.1, 0, Math.PI*2); ctx.fill(); 
-
-      if (member.hasGlasses) {
-          ctx.strokeStyle = '#333'; ctx.lineWidth = 1.5;
-          ctx.beginPath(); ctx.arc(-eyeSpacing, eyeY, eyeSize*1.6, 0, Math.PI*2); ctx.stroke();
-          ctx.beginPath(); ctx.arc(eyeSpacing, eyeY, eyeSize*1.6, 0, Math.PI*2); ctx.stroke();
-          ctx.beginPath(); ctx.moveTo(-eyeSpacing+eyeSize*1.6, eyeY); ctx.lineTo(eyeSpacing-eyeSize*1.6, eyeY); ctx.stroke();
-          // Arms
-          ctx.beginPath(); ctx.moveTo(-eyeSpacing-eyeSize*1.6, eyeY); ctx.lineTo(-size*0.2, eyeY-2); ctx.stroke();
-          ctx.beginPath(); ctx.moveTo(eyeSpacing+eyeSize*1.6, eyeY); ctx.lineTo(size*0.2, eyeY-2); ctx.stroke();
-      }
-
-      ctx.restore(); // End Normal Body
-
-      // --- 2. IF ANGRY, DRAW POPUP AVATAR ABOVE ---
-      if (member.isAngry) {
-          ctx.save();
-          
-          // Move bubble higher so it floats above head
-          const bubbleY = -size * 1.1;
-
-          drawDynamicFire(ctx, 0, bubbleY - size*0.2, 1.2);
-          
-          ctx.beginPath();
-          ctx.arc(0, bubbleY, size*0.5, 0, Math.PI*2);
-          ctx.fillStyle = '#fecaca'; 
-          ctx.fill();
-          ctx.strokeStyle = '#ef4444';
-          ctx.lineWidth = 3;
-          ctx.stroke();
-          
-          ctx.save();
-          ctx.clip(); 
-          
-          // Draw magnified head inside bubble
-          // Center the head drawing inside the bubble
-          ctx.translate(0, bubbleY + size*0.2);
-          ctx.scale(1.5, 1.5);
-          
-          // Head
-          ctx.fillStyle = member.skinColor;
-          ctx.beginPath(); ctx.ellipse(0, -size*0.05, size*0.22, size*0.24, 0, 0, Math.PI*2); ctx.fill();
-          
-          // Angry Face
-          ctx.strokeStyle = 'black'; ctx.lineWidth = 1.5;
-          ctx.beginPath(); ctx.moveTo(-6, -8); ctx.lineTo(-2, -4); ctx.stroke();
-          ctx.beginPath(); ctx.moveTo(6, -8); ctx.lineTo(2, -4); ctx.stroke();
-          ctx.fillStyle = 'white';
-          ctx.beginPath(); ctx.arc(-5, -2, 3, 0, Math.PI*2); ctx.fill();
-          ctx.beginPath(); ctx.arc(5, -2, 3, 0, Math.PI*2); ctx.fill();
-          ctx.fillStyle = 'black';
-          ctx.beginPath(); ctx.arc(-5, -2, 1, 0, Math.PI*2); ctx.fill();
-          ctx.beginPath(); ctx.arc(5, -2, 1, 0, Math.PI*2); ctx.fill();
-          ctx.beginPath(); ctx.arc(0, 5, 4, Math.PI, 0); ctx.stroke();
-
-          // Reuse Hair Logic for avatar
-          // Need to set hat type for this scope or just reuse member properties
-          if (member.hatType === 'cap') {
-              ctx.fillStyle = '#1f2937';
-              ctx.beginPath(); ctx.arc(0, -size*0.15, size*0.24, Math.PI, 0); ctx.fill();
-              ctx.fillRect(0, -size*0.15, size*0.35, size*0.05); 
-          } else if (member.hatType === 'beanie') {
-              ctx.fillStyle = '#b91c1c';
-              ctx.beginPath(); ctx.ellipse(0, -size*0.18, size*0.24, size*0.18, 0, Math.PI, 0); ctx.fill();
-              ctx.fillRect(-size*0.24, -size*0.18, size*0.48, size*0.05);
-          } else {
-              ctx.fillStyle = member.hairColor;
-              if (member.hairStyle === 'spiky') {
-                 ctx.beginPath(); ctx.moveTo(-size*0.2, -size*0.1);
-                 ctx.lineTo(-size*0.25, -size*0.35); ctx.lineTo(-size*0.1, -size*0.25);
-                 ctx.lineTo(0, -size*0.38); ctx.lineTo(size*0.1, -size*0.25);
-                 ctx.lineTo(size*0.25, -size*0.35); ctx.lineTo(size*0.2, -size*0.1);
-                 ctx.fill();
-                 ctx.beginPath(); ctx.arc(0, -size*0.1, size*0.22, Math.PI, 0); ctx.fill();
-              } else if (member.hairStyle === 'long') {
-                 ctx.beginPath(); ctx.arc(0, -size*0.1, size*0.24, Math.PI, 0); ctx.fill();
-                 ctx.fillRect(-size*0.24, -size*0.1, size*0.48, size*0.25);
-              } else if (member.hairStyle === 'buns') {
-                 ctx.beginPath(); ctx.arc(0, -size*0.1, size*0.24, Math.PI, 0); ctx.fill();
-                 ctx.beginPath(); ctx.arc(-size*0.25, -size*0.2, size*0.1, 0, Math.PI*2); ctx.fill();
-                 ctx.beginPath(); ctx.arc(size*0.25, -size*0.2, size*0.1, 0, Math.PI*2); ctx.fill();
-              } else if (member.hairStyle === 'pigtails') {
-                 ctx.beginPath(); ctx.arc(0, -size*0.1, size*0.24, Math.PI, 0); ctx.fill();
-                 ctx.fillRect(-size*0.28, -size*0.05, size*0.1, size*0.25);
-                 ctx.fillRect(size*0.18, -size*0.05, size*0.1, size*0.25);
-              } else { 
-                 ctx.beginPath(); ctx.arc(0, -size*0.1, size*0.25, Math.PI, 0); ctx.fill();
-              }
-          }
-          
-          ctx.restore(); // End Clip
-          ctx.restore(); // End Avatar transform
-      }
-
-      ctx.restore(); // End Main
-  };
+  }, []);
 
   const gameLoop = useCallback(() => {
     const canvas = canvasRef.current;
@@ -544,33 +562,43 @@ export const StageCooking: React.FC<StageCookingProps> = ({ onComplete, videoStr
     // --- Vision Processing (Throttled) ---
     const now = performance.now();
     if (videoRef.current && handLandmarkerRef.current && now - lastVideoTimeRef.current > 100) {
-        lastVideoTimeRef.current = now;
-        const results = handLandmarkerRef.current.detectForVideo(videoRef.current, now);
-        handResultsRef.current = results;
-        
-        if (results.landmarks && results.landmarks.length > 0) {
-            const hand = results.landmarks[0];
-            // Movement Control (Mirroring)
-            const handX = (1 - hand[9].x) * width;
-            
-            // Smooth movement
-            mouseRef.current.x += (handX - mouseRef.current.x) * 0.2;
-            
-            // Gesture Control
-            const dx = hand[8].x - hand[4].x;
-            const dy = hand[8].y - hand[4].y;
-            const pinchDist = Math.sqrt(dx*dx + dy*dy);
-            
-            const middleTipY = hand[12].y;
-            const middlePipY = hand[10].y;
-            const isFist = middleTipY > middlePipY;
-
-            if (pinchDist < 0.1 || isFist) { 
-                potActiveRef.current = true;
-            } else {
-                potActiveRef.current = false;
-            }
+        if (videoRef.current.readyState >= 2) {
+             lastVideoTimeRef.current = now;
+             try {
+                 const results = handLandmarkerRef.current.detectForVideo(videoRef.current, now);
+                 handResultsRef.current = results;
+             } catch (e) {
+                 console.warn("Hand detection failed", e);
+             }
         }
+    }
+
+    // --- INPUT PROCESSING (Every Frame) ---
+    const results = handResultsRef.current;
+    if (results && results.landmarks && results.landmarks.length > 0) {
+        const hand = results.landmarks[0];
+        // Movement Control (Mirroring)
+        const handX = (1 - hand[9].x) * width;
+        
+        // Smooth movement
+        mouseRef.current.x += (handX - mouseRef.current.x) * 0.2;
+        
+        // Gesture Control
+        const dx = hand[8].x - hand[4].x;
+        const dy = hand[8].y - hand[4].y;
+        const pinchDist = Math.sqrt(dx*dx + dy*dy);
+        
+        const middleTipY = hand[12].y;
+        const middlePipY = hand[10].y;
+        const isFist = middleTipY > middlePipY;
+
+        const isHandActive = pinchDist < 0.1 || isFist;
+        
+        // Combined Logic: Pot is active if hand pinches OR mouse is held down
+        potActiveRef.current = isHandActive || isMouseDownRef.current;
+    } else {
+        // Fallback: If no hand detected, purely rely on mouse
+        potActiveRef.current = isMouseDownRef.current;
     }
 
     timeRef.current++;
@@ -628,7 +656,7 @@ export const StageCooking: React.FC<StageCookingProps> = ({ onComplete, videoStr
 
         const cx = (member.x / 100) * width;
         const cy = cookingAreaHeight + 20 + (member.y * 40); 
-        drawDetailedStudent(ctx, member, cx, cy, 80);
+        drawDetailedStudent(ctx, member, cx, cy, 80, timeRef.current);
     });
 
     // Bubbles
@@ -680,7 +708,7 @@ export const StageCooking: React.FC<StageCookingProps> = ({ onComplete, videoStr
     // Fire FX
     if (potFireTimerRef.current > 0) {
         potFireTimerRef.current--;
-        drawDynamicFire(ctx, potX + potWidth/2, potY + 50, 1.8);
+        drawDynamicFire(ctx, potX + potWidth/2, potY + 50, 1.8, timeRef.current);
     }
 
     // Pot Handle
@@ -900,7 +928,7 @@ export const StageCooking: React.FC<StageCookingProps> = ({ onComplete, videoStr
 
     ctx.restore(); // End shake
     frameIdRef.current = requestAnimationFrame(gameLoop);
-  }, [onComplete]);
+  }, [onComplete, spawnSteam, spawnTextFeedback]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -932,8 +960,19 @@ export const StageCooking: React.FC<StageCookingProps> = ({ onComplete, videoStr
     mouseRef.current.y = clientY - rect.top;
   };
   
-  const handleDown = () => { potActiveRef.current = true; };
-  const handleUp = () => { potActiveRef.current = false; };
+  const handleDown = () => { isMouseDownRef.current = true; };
+  const handleUp = () => { isMouseDownRef.current = false; };
+
+  // Use Window listeners for mouse up to prevent sticky state when dragging out of viewport
+  useEffect(() => {
+      const globalUp = () => { isMouseDownRef.current = false; };
+      window.addEventListener('mouseup', globalUp);
+      window.addEventListener('touchend', globalUp);
+      return () => {
+          window.removeEventListener('mouseup', globalUp);
+          window.removeEventListener('touchend', globalUp);
+      };
+  }, []);
 
   useEffect(() => {
     frameIdRef.current = requestAnimationFrame(gameLoop);

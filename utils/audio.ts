@@ -6,6 +6,7 @@ class AudioEngine {
   private currentOscillators: OscillatorNode[] = [];
   private currentIntervals: number[] = [];
   private isMuted: boolean = false;
+  private brownNoiseLastOut: number = 0;
 
   constructor() {
     // Lazy init handled in init()
@@ -83,8 +84,8 @@ class AudioEngine {
         const data = buffer.getChannelData(0);
         for (let i = 0; i < bufferSize; i++) {
             const white = Math.random() * 2 - 1;
-            data[i] = (lastOut + (0.02 * white)) / 1.02; // Brown noise approximation
-            lastOut = data[i];
+            data[i] = (this.brownNoiseLastOut + (0.02 * white)) / 1.02; // Brown noise approximation
+            this.brownNoiseLastOut = data[i];
             data[i] *= 3.5; // Gain up
         }
         
@@ -300,8 +301,5 @@ class AudioEngine {
       });
   }
 }
-
-// Global state for brown noise generator
-let lastOut = 0;
 
 export const audio = new AudioEngine();

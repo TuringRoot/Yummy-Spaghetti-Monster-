@@ -136,6 +136,9 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
                 faceLandmarkerRef.current = faceLandmarker;
                 handLandmarkerRef.current = handLandmarker;
                 setVisionReady(true);
+            } else {
+                faceLandmarker.close();
+                handLandmarker.close();
             }
         } catch (e) {
             console.error("Vision Load Error:", e);
@@ -143,7 +146,11 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
         }
     };
     setupVision();
-    return () => { isMounted = false; };
+    return () => { 
+        isMounted = false; 
+        faceLandmarkerRef.current?.close();
+        handLandmarkerRef.current?.close();
+    };
   }, []);
 
   // 2. Bind Video Stream
@@ -221,43 +228,47 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
              lastVisionTimeRef.current = now;
              const video = videoRef.current;
              
-             if (handLandmarkerRef.current) {
-                 const result = handLandmarkerRef.current.detectForVideo(video, now);
-                 if (result.landmarks && result.landmarks.length > 0) {
-                     const hand = result.landmarks[0];
-                     currentHandLandmarksRef.current = hand; 
-                     lastHandTimeRef.current = now;
+             try {
+                 if (handLandmarkerRef.current) {
+                     const result = handLandmarkerRef.current.detectForVideo(video, now);
+                     if (result.landmarks && result.landmarks.length > 0) {
+                         const hand = result.landmarks[0];
+                         currentHandLandmarksRef.current = hand; 
+                         lastHandTimeRef.current = now;
 
-                     const px = (1 - hand[9].x) * width;
-                     const py = hand[9].y * height;
-                     
-                     // Smooth Lerp
-                     const lerp = 0.3;
-                     cursorScreenPosRef.current.x += (px - cursorScreenPosRef.current.x) * lerp;
-                     cursorScreenPosRef.current.y += (py - cursorScreenPosRef.current.y) * lerp;
-                     
-                     mousePosRef.current = {
-                         x: (cursorScreenPosRef.current.x / width) * 2 - 1,
-                         y: -(cursorScreenPosRef.current.y / height) * 2 + 1
-                     };
+                         const px = (1 - hand[9].x) * width;
+                         const py = hand[9].y * height;
+                         
+                         // Smooth Lerp
+                         const lerp = 0.3;
+                         cursorScreenPosRef.current.x += (px - cursorScreenPosRef.current.x) * lerp;
+                         cursorScreenPosRef.current.y += (py - cursorScreenPosRef.current.y) * lerp;
+                         
+                         mousePosRef.current = {
+                             x: (cursorScreenPosRef.current.x / width) * 2 - 1,
+                             y: -(cursorScreenPosRef.current.y / height) * 2 + 1
+                         };
 
-                     const thumbTip = hand[4];
-                     const indexTip = hand[8];
-                     const dist = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y);
-                     // Hand pinch overrides
-                     isSprayingRef.current = dist < 0.1; 
-                 } else {
-                     currentHandLandmarksRef.current = null;
+                         const thumbTip = hand[4];
+                         const indexTip = hand[8];
+                         const dist = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y);
+                         // Hand pinch overrides
+                         isSprayingRef.current = dist < 0.1; 
+                     } else {
+                         currentHandLandmarksRef.current = null;
+                     }
                  }
-             }
 
-             if (faceLandmarkerRef.current) {
-                 const result = faceLandmarkerRef.current.detectForVideo(video, now);
-                 if (result.faceBlendshapes && result.faceBlendshapes.length > 0) {
-                     const shapes = result.faceBlendshapes[0].categories;
-                     const jawOpen = shapes.find(s => s.categoryName === 'jawOpen')?.score || 0;
-                     mouthOpenRef.current += (jawOpen - mouthOpenRef.current) * 0.3;
+                 if (faceLandmarkerRef.current) {
+                     const result = faceLandmarkerRef.current.detectForVideo(video, now);
+                     if (result.faceBlendshapes && result.faceBlendshapes.length > 0) {
+                         const shapes = result.faceBlendshapes[0].categories;
+                         const jawOpen = shapes.find(s => s.categoryName === 'jawOpen')?.score || 0;
+                         mouthOpenRef.current += (jawOpen - mouthOpenRef.current) * 0.3;
+                     }
                  }
+             } catch(e) {
+                 console.warn("Vision detection error", e);
              }
          }
     }
@@ -386,6 +397,17 @@ export const StageFeeding: React.FC<StageFeedingProps> = ({ collectedIngredients
 
   const handleMouseDown = () => { isMousePressingRef.current = true; };
   const handleMouseUp = () => { isMousePressingRef.current = false; };
+  
+  // Use Window listeners for mouse up to prevent sticky state
+  useEffect(() => {
+      const globalUp = () => { isMousePressingRef.current = false; };
+      window.addEventListener('mouseup', globalUp);
+      window.addEventListener('touchend', globalUp);
+      return () => {
+          window.removeEventListener('mouseup', globalUp);
+          window.removeEventListener('touchend', globalUp);
+      };
+  }, []);
 
   // Calculate Bezier Point
   const getBezierPoint = (t: number, p0: any, cp1: any, cp2: any, p3: any) => {
