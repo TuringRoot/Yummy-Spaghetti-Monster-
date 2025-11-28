@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { GameStage } from './types';
 import { WebcamBackground } from './components/WebcamBackground';
 import { StageIntro } from './components/StageIntro';
@@ -10,6 +10,21 @@ const App: React.FC = () => {
   const [stage, setStage] = useState<GameStage>(GameStage.INTRO);
   const [collectedIngredients, setCollectedIngredients] = useState<string[]>([]);
   const [finalColors, setFinalColors] = useState<string[]>(['#fbbf24']); // Default pasta color
+  const [videoStream, setVideoStream] = useState<MediaStream | null>(null);
+
+  useEffect(() => {
+    const initWebcam = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          video: { width: 640, height: 480 } 
+        });
+        setVideoStream(stream);
+      } catch (err) {
+        console.error("Error accessing webcam:", err);
+      }
+    };
+    initWebcam();
+  }, []);
 
   const handleStart = () => {
     setStage(GameStage.COOKING);
@@ -24,10 +39,6 @@ const App: React.FC = () => {
 
   const handleFeedingComplete = (colors: string[]) => {
       setFinalColors(colors);
-      // StageFeeding handles the visual "explosion/tearing" animation (approx 2s).
-      // Once it triggers this callback, the screen is white (from StageFeeding's internal flash).
-      // We move directly to AFTERMATH, skipping a separate "EXPLOSION" stage component
-      // because the visual transition is now integrated into StageFeeding.
       setStage(GameStage.AFTERMATH);
   };
 
@@ -40,7 +51,7 @@ const App: React.FC = () => {
   return (
     <div className="relative w-screen h-screen bg-neutral-900 overflow-hidden select-none">
       {/* Immersive Webcam Layer (Always renders behind) */}
-      <WebcamBackground />
+      <WebcamBackground stream={videoStream} />
 
       {/* Stage Manager */}
       <main className="relative z-10 w-full h-full">
@@ -49,7 +60,10 @@ const App: React.FC = () => {
         )}
 
         {stage === GameStage.COOKING && (
-          <StageCooking onComplete={handleCookingComplete} />
+          <StageCooking 
+            onComplete={handleCookingComplete} 
+            videoStream={videoStream}
+          />
         )}
 
         {stage === GameStage.TRANSITION_TO_FEEDING && (
@@ -63,17 +77,17 @@ const App: React.FC = () => {
         {stage === GameStage.FEEDING && (
           <StageFeeding 
             collectedIngredients={collectedIngredients} 
-            onComplete={handleFeedingComplete} 
+            onComplete={handleFeedingComplete}
+            videoStream={videoStream}
           />
         )}
         
-        {/* We removed the explicit EXPLOSION stage because StageFeeding now handles the visual flare */}
-
         {stage === GameStage.AFTERMATH && (
           <StageAftermath 
             mixedColors={finalColors}
             ingredients={collectedIngredients}
-            onRestart={handleRestart} 
+            onRestart={handleRestart}
+            videoStream={videoStream}
           />
         )}
       </main>

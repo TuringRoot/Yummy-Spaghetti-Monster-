@@ -1,18 +1,22 @@
-
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
+import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 
 interface StageAftermathProps {
     onRestart: () => void;
     mixedColors: string[];
     ingredients: string[];
+    videoStream: MediaStream | null;
 }
 
-interface Comment {
+interface BubbleComment {
     id: number;
     user: string;
     text: string;
     avatar: string;
+    left: number; // 0-100%
+    sizeScale: number;
+    speed: number;
 }
 
 enum ParticleMode {
@@ -23,140 +27,303 @@ enum ParticleMode {
     SHATTER = 'SHATTER'
 }
 
-// Helper to create texture from emoji
+// Helper: Emoji Texture for Ingredients
 const createEmojiTexture = (emoji: string) => {
     const canvas = document.createElement('canvas');
     canvas.width = 128;
     canvas.height = 128;
     const ctx = canvas.getContext('2d');
     if (ctx) {
-        ctx.font = 'bold 80px Arial';
+        ctx.font = 'bold 90px Arial';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillStyle = 'white';
-        ctx.fillText(emoji, 64, 64);
+        ctx.fillText(emoji, 64, 70);
     }
     const texture = new THREE.CanvasTexture(canvas);
     return texture;
 };
 
-export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixedColors, ingredients }) => {
+// Helper: Solid Circle for Chunks
+const createSolidCircleTexture = () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 64; 
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+        ctx.beginPath();
+        ctx.arc(32, 32, 30, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.fill();
+    }
+    return new THREE.CanvasTexture(canvas);
+};
+
+// Helper: Eyeball Texture
+const createEyeballTexture = () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 128;
+    canvas.height = 128;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+        // Sclera
+        ctx.beginPath();
+        ctx.arc(64, 64, 60, 0, Math.PI * 2);
+        ctx.fillStyle = '#f3f4f6';
+        ctx.fill();
+        
+        // Veins
+        ctx.strokeStyle = 'rgba(220, 38, 38, 0.4)'; // Red veins
+        ctx.lineWidth = 2;
+        for(let i=0; i<6; i++) {
+            const angle = (Math.PI * 2 / 6) * i + Math.random() * 0.5;
+            ctx.beginPath();
+            ctx.moveTo(64 + Math.cos(angle)*30, 64 + Math.sin(angle)*30);
+            ctx.quadraticCurveTo(
+                64 + Math.cos(angle)*50, 
+                64 + Math.sin(angle)*50,
+                64 + Math.cos(angle)*60, 
+                64 + Math.sin(angle)*60
+            );
+            ctx.stroke();
+        }
+
+        // Iris
+        ctx.beginPath();
+        ctx.arc(64, 64, 32, 0, Math.PI * 2);
+        ctx.fillStyle = '#dc2626'; // Monster Red
+        ctx.fill();
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = '#7f1d1d';
+        ctx.stroke();
+
+        // Pupil
+        ctx.beginPath();
+        ctx.arc(64, 64, 16, 0, Math.PI * 2);
+        ctx.fillStyle = '#0f172a';
+        ctx.fill();
+        
+        // Shine
+        ctx.beginPath();
+        ctx.arc(80, 48, 8, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.fill();
+    }
+    return new THREE.CanvasTexture(canvas);
+};
+
+export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixedColors, ingredients, videoStream }) => {
   const containerRef = useRef<HTMLDivElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+
   const sceneRef = useRef<THREE.Scene | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
-  const modeRef = useRef<ParticleMode>(ParticleMode.BOWLS);
+  const modeRef = useRef<ParticleMode>(ParticleMode.CHAOS); // Default to Chaos (Explosion)
   const particleTargetsRef = useRef<Float32Array | null>(null);
   const timeRef = useRef(0);
   const mousePosRef = useRef(new THREE.Vector3(0,0,0));
   
-  const particlesRef = useRef<THREE.Group | null>(null);
-  const eyesRef = useRef<{ mesh: THREE.Mesh, vel: THREE.Vector3, origin: THREE.Vector3 }[]>([]);
-  const nervesRef = useRef<THREE.Mesh[]>([]);
-  const slimeTrailsRef = useRef<THREE.Mesh[]>([]);
+  const particlesRef = useRef<THREE.Points | null>(null);
+  const ingredientSpritesRef = useRef<THREE.Sprite[]>([]);
+  const eyeballsRef = useRef<THREE.Sprite[]>([]);
+  const bowlCentersRef = useRef<THREE.Vector3[]>([]);    
+
+  const isHandActiveRef = useRef(false);
   
-  const [comments, setComments] = useState<Comment[]>([]);
+  const [comments, setComments] = useState<BubbleComment[]>([]);
   const [likes, setLikes] = useState(2500);
-  const [activeMode, setActiveMode] = useState<ParticleMode>(ParticleMode.BOWLS);
+  const [activeMode, setActiveMode] = useState<ParticleMode>(ParticleMode.CHAOS);
   const [flashOpacity, setFlashOpacity] = useState(1);
+  const [showBowlText, setShowBowlText] = useState(false); 
+  const [giftEffect, setGiftEffect] = useState<{id:number, x:number, emoji:string}[]>([]);
 
-  // --- Generators ---
+  // Vision Refs
+  const handLandmarkerRef = useRef<HandLandmarker | null>(null);
+  const lastVideoTimeRef = useRef(-1);
 
-  const generateBowlTargets = (count: number) => {
-      const targets = new Float32Array(count * 3);
-      const centers: THREE.Vector3[] = [];
-      // 25 Bowl Centers spread out
-      for(let i=0; i<25; i++) {
-          centers.push(new THREE.Vector3(
-              (Math.random()-0.5)*500, 
-              (Math.random()-0.5)*300, 
-              (Math.random()-0.5)*200
-          ));
-      }
-      for(let i=0; i<count; i++) {
-          const c = centers[i % 25];
-          const theta = Math.random() * Math.PI * 2;
-          const r = Math.random() * 20; 
-          targets[i*3] = c.x + Math.cos(theta)*r;
-          targets[i*3+1] = c.y + (Math.random()-0.5)*15; // Vertical piling
-          targets[i*3+2] = c.z + Math.sin(theta)*r;
-      }
-      return targets;
-  };
+  // --- Vision Setup ---
+  useEffect(() => {
+    const setupVision = async () => {
+        try {
+            const vision = await FilesetResolver.forVisionTasks(
+                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+            );
+            handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: {
+                    modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
+                    delegate: "GPU"
+                },
+                runningMode: "VIDEO",
+                numHands: 1
+            });
+        } catch (e) {
+            console.error("Failed to load MediaPipe Hands", e);
+        }
+    };
+    setupVision();
+  }, []);
 
-  const generateHeartTargets = (count: number) => {
-      const targets = new Float32Array(count * 3);
-      for(let i=0; i<count; i++) {
-          const t = Math.random() * Math.PI * 2;
-          // Parametric heart
-          const x = 16 * Math.pow(Math.sin(t), 3);
-          const y = 13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t);
-          const scale = 12;
-          targets[i*3] = x * scale + (Math.random()-0.5)*10;
-          targets[i*3+1] = y * scale + 50 + (Math.random()-0.5)*10;
-          targets[i*3+2] = (Math.random()-0.5) * 60;
-      }
-      return targets;
-  };
+  // Sync Video
+  useEffect(() => {
+    if (videoRef.current && videoStream) {
+        videoRef.current.srcObject = videoStream;
+        videoRef.current.onloadedmetadata = () => {
+            videoRef.current?.play().catch(e => console.log("Video play error", e));
+        };
+    }
+  }, [videoStream]);
 
-  const generateGIOTargets = (count: number) => {
-      const targets = new Float32Array(count * 3);
-      const section = Math.floor(count / 3);
+  // --- Chat Bubble Generator ---
+  useEffect(() => {
+      const users = ["Foodie_HK", "Campus_Cat", "Prof_Gio", "SpaghettiLover", "PolyU_Student", "Canteen_Critic", "YummyYum"];
+      const messages = [
+          "Looks delicious! 🤤", "So satisfying to watch!", "Is that edible? 😂", 
+          "Chef is cooking!! 👨‍🍳", "I want some!", "Wait, what did you put in there?", 
+          "More cheese please!", "5 Stars! ⭐⭐⭐⭐⭐", "Epic meal time", "Can I have the recipe?"
+      ];
+      const avatars = ["🍔", "🐱", "👨‍🏫", "🍝", "🎓", "🧐", "😋"];
+
+      const interval = setInterval(() => {
+          const id = Date.now();
+          const newComment: BubbleComment = {
+              id,
+              user: users[Math.floor(Math.random() * users.length)],
+              text: messages[Math.floor(Math.random() * messages.length)],
+              avatar: avatars[Math.floor(Math.random() * avatars.length)],
+              left: Math.random() * 80 + 5,
+              sizeScale: 0.8 + Math.random() * 0.4,
+              speed: 2 + Math.random() * 2 
+          };
+          
+          setComments(prev => {
+              const keep = prev.filter(c => (Date.now() - c.id) < 6000); 
+              return [...keep, newComment];
+          });
+      }, 1200);
+
+      return () => clearInterval(interval);
+  }, []);
+
+
+  // --- Target Generators ---
+  const PARTICLE_COUNT = 1200; // Increased for "Exploded" feel
+  const EYEBALL_COUNT = 8;
+  // Total objects to manage targets for
+  const TOTAL_OBJECTS = PARTICLE_COUNT + ingredients.length + EYEBALL_COUNT;
+
+  const generateTargets = (mode: ParticleMode) => {
+      const targets = new Float32Array(TOTAL_OBJECTS * 3);
       
-      const setP = (i: number, x: number, y: number) => {
-          targets[i*3] = x + (Math.random()-0.5)*20; // More scatter for messy look
-          targets[i*3+1] = y + (Math.random()-0.5)*20;
-          targets[i*3+2] = (Math.random()-0.5)*40;
-      };
-      
-      const radius = 80;
-      const gCenterX = -250;
-      for(let i=0; i<section; i++) {
-          const progress = i / section;
-          if (progress < 0.75) {
-             const angle = (Math.PI * 0.25) + (progress / 0.75) * (Math.PI * 1.5); 
-             const finalAngle = angle + Math.PI / 2;
-             setP(i, gCenterX + Math.cos(finalAngle)*radius, Math.sin(finalAngle)*radius);
-          } else {
-             const barProgress = (progress - 0.75) / 0.25;
-             setP(i, gCenterX + radius * 0.2 + barProgress * radius * 0.5, -radius * 0.1);
+      if (mode === ParticleMode.BOWLS) {
+        const bowlCount = 30;
+        if (bowlCentersRef.current.length !== bowlCount) {
+            bowlCentersRef.current = [];
+            for(let i=0; i<bowlCount; i++) {
+                bowlCentersRef.current.push(new THREE.Vector3(
+                    (Math.random()-0.5)*700, 
+                    (Math.random()-0.5)*400, 
+                    (Math.random()-0.5)*100
+                ));
+            }
+        }
+        for(let i=0; i<TOTAL_OBJECTS; i++) {
+            const c = bowlCentersRef.current[i % bowlCount];
+            const theta = Math.random() * Math.PI * 2;
+            const r = Math.random() * 30;
+            targets[i*3] = c.x + Math.cos(theta)*r;
+            targets[i*3+1] = c.y + (Math.random())*25 - 5; 
+            targets[i*3+2] = c.z + Math.sin(theta)*r;
+        }
+
+      } else if (mode === ParticleMode.HEART) {
+        for(let i=0; i<TOTAL_OBJECTS; i++) {
+            const t = Math.random() * Math.PI * 2;
+            const x = 16 * Math.pow(Math.sin(t), 3);
+            const y = 13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t);
+            const scale = 14;
+            targets[i*3] = x * scale + (Math.random()-0.5)*20;
+            targets[i*3+1] = y * scale + 50 + (Math.random()-0.5)*20;
+            targets[i*3+2] = (Math.random()-0.5) * 60;
+        }
+
+      } else if (mode === ParticleMode.GIO) {
+          const setP = (i: number, x: number, y: number) => {
+            targets[i*3] = x + (Math.random()-0.5)*30; 
+            targets[i*3+1] = y + (Math.random()-0.5)*30;
+            targets[i*3+2] = (Math.random()-0.5)*50;
+          };
+          const part1 = Math.floor(TOTAL_OBJECTS * 0.4);
+          const part2 = Math.floor(TOTAL_OBJECTS * 0.6);
+          
+          const gCenterX = -250; const gRadius = 110;
+          for (let i = 0; i < part1; i++) {
+              const ratio = i / part1;
+              if (ratio < 0.75) {
+                  const angle = (Math.PI/4) + (ratio/0.75) * (1.5 * Math.PI);
+                  setP(i, gCenterX + Math.cos(angle)*gRadius, Math.sin(angle)*gRadius);
+              } else {
+                  const lineRatio = (ratio - 0.75) / 0.25;
+                  setP(i, (gCenterX + gRadius) - lineRatio * (gRadius * 0.6), -gRadius * 0.1);
+              }
           }
+          for (let i = part1; i < part2; i++) {
+              const ratio = (i - part1) / (part2 - part1);
+              const y = (ratio - 0.5) * 260;
+              setP(i, 0, y);
+          }
+          const oCenterX = 250;
+          for (let i = part2; i < TOTAL_OBJECTS; i++) {
+              const ratio = (i - part2) / (TOTAL_OBJECTS - part2);
+              const angle = ratio * Math.PI * 2;
+              setP(i, oCenterX + Math.cos(angle)*110, Math.sin(angle)*110);
+          }
+
+      } else if (mode === ParticleMode.SHATTER) {
+        for(let i=0; i<TOTAL_OBJECTS; i++) {
+            targets[i*3] = (Math.random()-0.5) * 900;
+            targets[i*3+1] = -300 + Math.random() * 40; 
+            targets[i*3+2] = (Math.random()-0.5) * 500;
+        }
       }
 
-      for(let i=section; i<section*2; i++) {
-          const h = ((i-section)/section) * 240 - 120;
-          setP(i, 0, h);
-      }
-
-      for(let i=section*2; i<count; i++) {
-          const t = ((i-section*2)/(count-section*2)) * Math.PI * 2;
-          setP(i, 250 + Math.cos(t)*100, Math.sin(t)*100);
-      }
       return targets;
   };
 
-  const generateShatterTargets = (count: number) => {
-      const targets = new Float32Array(count * 3);
-      for(let i=0; i<count; i++) {
-          targets[i*3] = (Math.random()-0.5) * 800;
-          targets[i*3+1] = -250 + Math.random() * 20; // Pile on floor
-          targets[i*3+2] = (Math.random()-0.5) * 400;
-      }
-      return targets;
+  const handleSendGift = () => {
+      const id = Date.now();
+      const emojis = ['🎁', '💎', '🚀', '🍝', '👑', '🏰'];
+      const chosenEmoji = emojis[Math.floor(Math.random()*emojis.length)];
+
+      setGiftEffect(prev => [...prev, { id, x: Math.random() * 100, emoji: chosenEmoji }]);
+      setLikes(l => l + 500);
+      
+      const newComment: BubbleComment = {
+          id: id + 1,
+          user: "YOU",
+          text: `sent ${chosenEmoji} Super Gift!`,
+          avatar: "😎",
+          left: 50,
+          sizeScale: 1.2,
+          speed: 3
+      };
+      setComments(prev => [...prev, newComment]);
+
+      setTimeout(() => {
+          setGiftEffect(prev => prev.filter(e => e.id !== id));
+      }, 2000);
   };
 
-  // Switch Mode Logic
   const switchMode = (newMode: ParticleMode) => {
       modeRef.current = newMode;
       setActiveMode(newMode);
-      // Total count needs to match particle creation count (ingredients + leftovers)
-      const count = ingredients.length + 350; 
-      
-      if (newMode === ParticleMode.BOWLS) particleTargetsRef.current = generateBowlTargets(count);
-      else if (newMode === ParticleMode.HEART) particleTargetsRef.current = generateHeartTargets(count);
-      else if (newMode === ParticleMode.GIO) particleTargetsRef.current = generateGIOTargets(count);
-      else if (newMode === ParticleMode.SHATTER) particleTargetsRef.current = generateShatterTargets(count);
-      else particleTargetsRef.current = null;
+      setShowBowlText(newMode === ParticleMode.BOWLS);
+
+      if (newMode !== ParticleMode.CHAOS) {
+          particleTargetsRef.current = generateTargets(newMode);
+      } else {
+          particleTargetsRef.current = null;
+      }
   };
 
   useEffect(() => {
@@ -164,398 +331,393 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
     return () => clearTimeout(timer);
   }, []);
 
+  // --- Three.js Initialization ---
   useEffect(() => {
     if (!containerRef.current) return;
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x050505); 
-    scene.fog = new THREE.FogExp2(0x050505, 0.001);
-
-    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 3000);
-    camera.position.set(0, 50, 600);
-    camera.lookAt(0, 0, 0); 
-    cameraRef.current = camera;
-
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(window.devicePixelRatio);
-    renderer.shadowMap.enabled = true;
-    containerRef.current.appendChild(renderer.domElement);
-    sceneRef.current = scene;
-    rendererRef.current = renderer;
-
-    // Lighting
-    const ambientLight = new THREE.AmbientLight(0xffffff, 1.5);
-    scene.add(ambientLight);
     
-    const dirLight = new THREE.DirectionalLight(0xffffff, 2.0);
-    dirLight.position.set(200, 500, 200);
-    dirLight.castShadow = true;
-    scene.add(dirLight);
-
-    const backLight = new THREE.PointLight(0xffaa00, 1.0, 1000);
-    backLight.position.set(-200, 100, -200);
-    scene.add(backLight);
-
-    // --- Particles Group ---
-    const pGroup = new THREE.Group();
-    scene.add(pGroup);
-    particlesRef.current = pGroup;
-    
-    // 1. Ingredient Particles (Sprites)
-    ingredients.forEach((ing) => {
-        const tex = createEmojiTexture(ing);
-        const mat = new THREE.SpriteMaterial({ map: tex });
-        const sprite = new THREE.Sprite(mat);
-        const size = 30 + Math.random() * 20;
-        sprite.scale.set(size, size, 1);
-        
-        // Explosion Velocity
-        sprite.userData = { 
-            velocity: new THREE.Vector3(
-                (Math.random()-0.5)*60, 
-                (Math.random()-0.5)*60, 
-                (Math.random()-0.5)*60
-            ),
-            rotVel: new THREE.Vector3(0,0,0), // Sprites don't rotate 3d
-            isExploding: true 
-        };
-        pGroup.add(sprite);
-    });
-
-    // 2. Sticky Leftover Particles (Soft Blobs)
-    // Use Dodecahedron for a lumpy sphere look
-    const leftoverGeo = new THREE.DodecahedronGeometry(1, 0); 
-    
-    for(let i=0; i<350; i++) {
-        const color = mixedColors[i % mixedColors.length];
-        
-        // Sticky/Wet Material
-        const mat = new THREE.MeshPhysicalMaterial({ 
-            color: color, 
-            roughness: 0.4,
-            metalness: 0.1,
-            clearcoat: 1.0,
-            clearcoatRoughness: 0.1,
-            flatShading: false
-        });
-        
-        const mesh = new THREE.Mesh(leftoverGeo, mat);
-        
-        // Randomize size for "chunks"
-        const scale = 3 + Math.random() * 8;
-        mesh.scale.set(scale, scale, scale);
-        
-        mesh.position.set(0,0,0); 
-        
-        mesh.userData = { 
-            velocity: new THREE.Vector3(
-                (Math.random()-0.5)*60, 
-                (Math.random()-0.5)*60, 
-                (Math.random()-0.5)*60
-            ),
-            rotVel: new THREE.Vector3(Math.random()*0.1, Math.random()*0.1, Math.random()*0.1),
-            isExploding: true
-        };
-        pGroup.add(mesh);
+    if (rendererRef.current && rendererRef.current.domElement) {
+        containerRef.current.removeChild(rendererRef.current.domElement);
+        rendererRef.current.dispose();
     }
 
-    // --- Eyes ---
-    const eyeGeo = new THREE.SphereGeometry(25, 32, 32);
-    const whiteMat = new THREE.MeshPhongMaterial({ color: 0xffffff, specular: 0x555555, shininess: 100 });
-    const pupilMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
-    const shineMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    const width = containerRef.current.clientWidth;
+    const height = containerRef.current.clientHeight;
 
-    const createEye = (x: number) => {
-        const e = new THREE.Mesh(eyeGeo, whiteMat);
-        const p = new THREE.Mesh(new THREE.SphereGeometry(10), pupilMat);
-        p.position.z = 21; 
-        e.add(p);
-        const s = new THREE.Mesh(new THREE.SphereGeometry(3), shineMat);
-        s.position.set(5, 5, 24);
-        e.add(s);
-        e.position.set(x, 100, 50); 
-        return e;
-    };
-    const lEye = createEye(-40); 
-    const rEye = createEye(40);
-    scene.add(lEye, rEye);
+    const scene = new THREE.Scene();
+    // Dark Reddish Black background for Aftermath vibe
+    scene.background = new THREE.Color(0x1a0505); 
+    scene.fog = new THREE.FogExp2(0x1a0505, 0.0008);
+    sceneRef.current = scene;
+
+    const camera = new THREE.PerspectiveCamera(60, width / height, 1, 3000);
+    camera.position.z = 800;
+    cameraRef.current = camera;
+
+    const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(width, height);
+    containerRef.current.appendChild(renderer.domElement);
+    rendererRef.current = renderer;
+
+    // --- 1. Sauce Chunks (Particles) ---
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(PARTICLE_COUNT * 3);
+    const colors = new Float32Array(PARTICLE_COUNT * 3);
+    const sizes = new Float32Array(PARTICLE_COUNT);
+
+    const palette = mixedColors.length > 0 ? mixedColors : ['#fbbf24', '#f59e0b', '#b45309', '#78350f'];
+
+    for(let i=0; i<PARTICLE_COUNT; i++) {
+        // Broad initial explosion distribution
+        positions[i*3] = (Math.random()-0.5) * 600;
+        positions[i*3+1] = (Math.random()-0.5) * 600;
+        positions[i*3+2] = (Math.random()-0.5) * 400;
+
+        const c = new THREE.Color(palette[Math.floor(Math.random() * palette.length)]);
+        c.offsetHSL(0, 0, (Math.random()-0.5)*0.1);
+        
+        colors[i*3] = c.r;
+        colors[i*3+1] = c.g;
+        colors[i*3+2] = c.b;
+
+        // Varied chunk sizes
+        sizes[i] = Math.random() > 0.8 ? 25 + Math.random()*25 : 8 + Math.random()*8;
+    }
+
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+
+    const material = new THREE.PointsMaterial({ 
+        size: 1, 
+        vertexColors: true, 
+        map: createSolidCircleTexture(), 
+        blending: THREE.NormalBlending, 
+        depthTest: true, 
+        transparent: true,
+        opacity: 0.95 
+    });
+
+    const particles = new THREE.Points(geometry, material);
+    scene.add(particles);
+    particlesRef.current = particles;
+
+    // --- 2. Ingredient Sprites ---
+    const ingredientSprites: THREE.Sprite[] = [];
+    const usedIngredients = ingredients.length > 0 ? ingredients : ['🍅', '🍄', '🥩'];
     
-    eyesRef.current = [
-        { mesh: lEye, vel: new THREE.Vector3(-25, 10, 30), origin: new THREE.Vector3(-40, 200, 0) },
-        { mesh: rEye, vel: new THREE.Vector3(25, 15, -30), origin: new THREE.Vector3(40, 200, 0) }
-    ];
+    usedIngredients.forEach((emoji) => {
+        const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+            map: createEmojiTexture(emoji),
+            transparent: true,
+            opacity: 1.0
+        }));
+        const scale = 50 + Math.random() * 30;
+        sprite.scale.set(scale, scale, 1);
+        sprite.position.set((Math.random()-0.5)*500, (Math.random()-0.5)*500, (Math.random()-0.5)*500);
+        scene.add(sprite);
+        ingredientSprites.push(sprite);
+    });
+    ingredientSpritesRef.current = ingredientSprites;
 
-    // Nerves
-    const nerveMat = new THREE.MeshPhongMaterial({ color: 0xcc0000, shininess: 80 }); // Darker blood red
-    const nerveA = new THREE.Mesh(new THREE.BufferGeometry(), nerveMat);
-    const nerveB = new THREE.Mesh(new THREE.BufferGeometry(), nerveMat);
-    scene.add(nerveA, nerveB);
-    nervesRef.current = [nerveA, nerveB];
+    // --- 3. Eyeball Sprites (Restored!) ---
+    const eyeballs: THREE.Sprite[] = [];
+    for(let i=0; i<EYEBALL_COUNT; i++) {
+        const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+            map: createEyeballTexture(),
+            transparent: true,
+            opacity: 1.0
+        }));
+        // 2 Big Monster Eyes, rest smaller debris
+        const size = i < 2 ? 140 : 40 + Math.random() * 30;
+        sprite.scale.set(size, size, 1);
+        sprite.position.set(
+            (Math.random()-0.5)*600, 
+            (Math.random()-0.5)*600, 
+            (Math.random()-0.5)*600
+        );
+        scene.add(sprite);
+        eyeballs.push(sprite);
+    }
+    eyeballsRef.current = eyeballs;
 
-    // Initial Mode
-    switchMode(ParticleMode.BOWLS);
+    // Set Default Mode to CHAOS for explosion feel
+    switchMode(ParticleMode.CHAOS);
 
-    let frameId: number;
-    const floorY = -250;
-    const boundX = 500;
-    let explosionFrame = 0;
-
+    // --- Animation Loop ---
     const animate = () => {
-        frameId = requestAnimationFrame(animate);
-        timeRef.current += 0.01;
-        explosionFrame++;
+        const now = performance.now();
+        timeRef.current += 0.004;
 
-        // Rotate group slightly
-        if (particlesRef.current) {
-            particlesRef.current.rotation.y = Math.sin(timeRef.current * 0.1) * 0.1;
+        // Vision Hand Track
+        if (videoRef.current && handLandmarkerRef.current && now - lastVideoTimeRef.current > 50) {
+             lastVideoTimeRef.current = now;
+             const res = handLandmarkerRef.current.detectForVideo(videoRef.current, now);
+             
+             if (res.landmarks && res.landmarks.length > 0) {
+                 isHandActiveRef.current = true;
+                 const hand = res.landmarks[0];
+                 const palm = hand[9]; 
+                 const vH = 2 * 800 * Math.tan(THREE.MathUtils.degToRad(30));
+                 const vW = vH * (width / height);
+                 mousePosRef.current.set(
+                     (1 - palm.x - 0.5) * vW,
+                     -(palm.y - 0.5) * vH,
+                     0
+                 );
+             } else {
+                 isHandActiveRef.current = false;
+             }
         }
-        
-        // Calculate Mouse 3D Position for Interaction
-        const vector = new THREE.Vector3(mousePosRef.current.x, mousePosRef.current.y, 0.5);
-        if (cameraRef.current) vector.unproject(cameraRef.current);
-        const dir = vector.sub(cameraRef.current!.position).normalize();
-        const distance = -cameraRef.current!.position.z / dir.z;
-        const mouse3D = cameraRef.current!.position.clone().add(dir.multiplyScalar(distance));
 
+        const posAttr = particles.geometry.attributes.position;
+        const posArr = posAttr.array as Float32Array;
         const targets = particleTargetsRef.current;
-        
-        particlesRef.current?.children.forEach((obj, i) => {
-            const vel = obj.userData.velocity;
+        const mousePos = mousePosRef.current;
+        const isInteracting = isHandActiveRef.current;
 
-            // 1. EXPLOSION PHASE
-            if (explosionFrame < 80) {
-                obj.position.add(vel);
-                vel.multiplyScalar(0.94); // Drag
-                if (obj instanceof THREE.Mesh) {
-                    obj.rotation.x += obj.userData.rotVel.x;
-                    obj.rotation.y += obj.userData.rotVel.y;
-                }
-            } else {
-                // 2. MORPHING PHASE with MOUSE INTERACTION
-                if (targets && i < targets.length / 3) {
-                    let tx = targets[i*3];
-                    let ty = targets[i*3+1];
-                    let tz = targets[i*3+2];
-                    
-                    const targetPos = new THREE.Vector3(tx, ty, tz);
+        // 1. Update Particles
+        for(let i=0; i<PARTICLE_COUNT; i++) {
+            const idx = i*3;
+            let px = posArr[idx];
+            let py = posArr[idx+1];
+            let pz = posArr[idx+2];
 
-                    // --- Mouse Interaction ---
-                    // Scatter/Flow/Jump when mouse is near
-                    const distToMouse = obj.position.distanceTo(mouse3D);
-                    const interactionRadius = 200;
-                    
-                    if (distToMouse < interactionRadius) {
-                        // Repulsion Force
-                        const force = (interactionRadius - distToMouse) / interactionRadius;
-                        const repelDir = obj.position.clone().sub(mouse3D).normalize();
-                        
-                        // Push away from mouse
-                        targetPos.add(repelDir.multiplyScalar(force * 150));
-                        
-                        // Add Vertical Jump/Flow (Sine wave based on index + time)
-                        targetPos.y += Math.sin(timeRef.current * 15 + i * 0.1) * force * 60;
-                        
-                        // Add some random scatter
-                        targetPos.x += (Math.random()-0.5) * force * 20;
-                        targetPos.z += (Math.random()-0.5) * force * 20;
-                    }
+            if (targets && modeRef.current !== ParticleMode.CHAOS) {
+                const tx = targets[idx];
+                const ty = targets[idx+1];
+                const tz = targets[idx+2];
+                const lerpFactor = 0.03 + Math.random() * 0.02; 
+                px += (tx - px) * lerpFactor;
+                py += (ty - py) * lerpFactor;
+                pz += (tz - pz) * lerpFactor;
+            } 
+            
+            // Floating Drift
+            const drift = 0.6;
+            px += Math.sin(timeRef.current + py * 0.005) * drift;
+            py += Math.cos(timeRef.current + px * 0.005) * drift;
 
-                    // Bowls Mode Specific global interaction
-                    if (modeRef.current === ParticleMode.BOWLS) {
-                        const expansion = 1 + (mousePosRef.current.x * 0.8); 
-                        targetPos.x *= expansion;
-                        targetPos.z *= expansion;
-                    }
-
-                    // Lerp to target
-                    // Add noise drift constantly
-                    targetPos.x += Math.sin(timeRef.current + i)*5;
-                    targetPos.y += Math.cos(timeRef.current + i)*5;
-
-                    obj.position.lerp(targetPos, 0.04);
-                    
-                    if (obj instanceof THREE.Mesh) {
-                        obj.rotation.x += 0.01;
-                        obj.rotation.y += 0.02;
-                    }
+            // Hand Repulsion
+            if (isInteracting) {
+                const dx = px - mousePos.x;
+                const dy = py - mousePos.y;
+                const dz = pz - mousePos.z;
+                const distSq = dx*dx + dy*dy + dz*dz;
+                if (distSq < 300*300) {
+                    const dist = Math.sqrt(distSq);
+                    const force = (300 - dist) / 300;
+                    const repulsion = force * 15;
+                    px += (dx/dist) * repulsion;
+                    py += (dy/dist) * repulsion;
+                    pz += (dz/dist) * repulsion;
                 }
             }
-        });
-
-        // Eye Physics
-        const mouse3DPlane = new THREE.Vector3(mousePosRef.current.x * 300, 0, 100);
-        eyesRef.current.forEach((eye, idx) => {
-            // Heavy Gravity
-            eye.vel.y -= 1.5; 
             
-            // Mouse Interaction when stationary/rolling on floor
-            if (eye.mesh.position.y <= floorY + 30) {
-                 const diffX = (mouse3DPlane.x - eye.mesh.position.x);
-                 // Apply rolling force
-                 eye.vel.x += diffX * 0.01; 
-                 
-                 // Blood Trail
-                 if (Math.abs(eye.vel.x) > 2 && Math.random() > 0.85) {
-                    const plane = new THREE.Mesh(
-                        new THREE.CircleGeometry(15 + Math.random()*10, 8), 
-                        new THREE.MeshBasicMaterial({ color: 0x880000, transparent: true, opacity: 0.6 })
-                    );
-                    plane.rotation.x = -Math.PI / 2;
-                    plane.position.copy(eye.mesh.position);
-                    plane.position.y = floorY + 2;
-                    scene.add(plane);
-                    slimeTrailsRef.current.push(plane);
-                 }
+            // Gravity only in SHATTER mode
+            if (modeRef.current === ParticleMode.SHATTER) {
+                if (py > -350) py -= 1; 
             }
 
-            // Integration
-            eye.mesh.position.add(eye.vel);
-            eye.mesh.lookAt(new THREE.Vector3(mouse3DPlane.x, mouse3DPlane.y + 100, 500));
-            
-            // Floor Bounce
-            if (eye.mesh.position.y < floorY + 25) {
-                eye.mesh.position.y = floorY + 25;
-                // Bounce logic
-                if (Math.abs(eye.vel.y) > 4) {
-                    eye.vel.y *= -0.4; // Dampened bounce
-                } else {
-                    eye.vel.y = 0; // Stop bouncing
-                }
-                eye.vel.x *= 0.92; // Ground friction
-                eye.vel.z *= 0.92;
-            }
-
-            // Nerve Constraint
-            const nerveOrigin = eye.origin; 
-            const dist = eye.mesh.position.distanceTo(nerveOrigin);
-            if (dist > 480) { 
-                const pull = eye.mesh.position.clone().sub(nerveOrigin).normalize().multiplyScalar((dist - 480) * -0.1);
-                eye.vel.add(pull);
-            }
-            if (Math.abs(eye.mesh.position.x) > boundX) eye.vel.x *= -0.5;
-
-            // Draw Nerve
-            const midPoint = new THREE.Vector3().lerpVectors(nerveOrigin, eye.mesh.position, 0.5);
-            midPoint.y -= 150; // Sag
-            const curve = new THREE.CatmullRomCurve3([nerveOrigin, midPoint, eye.mesh.position]);
-            
-            if (nervesRef.current[idx]) {
-                if (nervesRef.current[idx].geometry) nervesRef.current[idx].geometry.dispose();
-                nervesRef.current[idx].geometry = new THREE.TubeGeometry(curve, 8, 4, 5, false);
-            }
-        });
-
-        // Trail Cleanup
-        if (slimeTrailsRef.current.length > 40) {
-            const old = slimeTrailsRef.current.shift();
-            if (old) { scene.remove(old); old.geometry.dispose(); (old.material as THREE.Material).dispose(); }
+            posArr[idx] = px;
+            posArr[idx+1] = py;
+            posArr[idx+2] = pz;
         }
-        slimeTrailsRef.current.forEach(t => {
-            (t.material as THREE.Material).opacity -= 0.005;
-            t.scale.multiplyScalar(1.01); // Spread slightly
-        });
+        posAttr.needsUpdate = true;
+
+        // Helper for Sprite Updates
+        const updateSprite = (sprite: THREE.Sprite, indexOffset: number) => {
+            const targetIndex = indexOffset * 3;
+            let tx = sprite.position.x; 
+            let ty = sprite.position.y; 
+            let tz = sprite.position.z;
+
+            if (targets && modeRef.current !== ParticleMode.CHAOS) {
+                tx = targets[targetIndex];
+                ty = targets[targetIndex+1];
+                tz = targets[targetIndex+2];
+                sprite.position.lerp(new THREE.Vector3(tx, ty, tz), 0.02);
+            } else {
+                 // Chaos Float
+                 sprite.position.y += Math.sin(timeRef.current + indexOffset) * 0.5;
+            }
+
+            // Repulsion
+            if (isInteracting) {
+                const dist = sprite.position.distanceTo(mousePos);
+                if (dist < 300) {
+                     const dir = sprite.position.clone().sub(mousePos).normalize().multiplyScalar(5);
+                     sprite.position.add(dir);
+                }
+            }
+            sprite.material.rotation = Math.sin(timeRef.current * 0.5 + indexOffset) * 0.15;
+        };
+
+        // 2. Update Ingredients
+        ingredientSprites.forEach((sprite, i) => updateSprite(sprite, PARTICLE_COUNT + i));
+
+        // 3. Update Eyeballs
+        eyeballs.forEach((sprite, i) => updateSprite(sprite, PARTICLE_COUNT + ingredientSprites.length + i));
+
+        // Camera Spin
+        scene.rotation.y = Math.sin(timeRef.current * 0.15) * 0.08;
 
         renderer.render(scene, camera);
+        requestAnimationFrame(animate);
     };
     animate();
 
-    const handleMM = (e: MouseEvent) => {
-        mousePosRef.current.set(
-            (e.clientX / window.innerWidth) * 2 - 1, 
-            -(e.clientY / window.innerHeight) * 2 + 1, 
-            0
-        );
+    const handleResize = () => {
+        if (!containerRef.current || !cameraRef.current || !rendererRef.current) return;
+        const w = containerRef.current.clientWidth;
+        const h = containerRef.current.clientHeight;
+        cameraRef.current.aspect = w/h;
+        cameraRef.current.updateProjectionMatrix();
+        rendererRef.current.setSize(w, h);
     };
-    window.addEventListener('mousemove', handleMM);
-    
+    window.addEventListener('resize', handleResize);
+
     return () => {
-        cancelAnimationFrame(frameId);
-        window.removeEventListener('mousemove', handleMM);
-        if (rendererRef.current) {
-            rendererRef.current.dispose();
-            const dom = rendererRef.current.domElement;
-            if (dom && dom.parentNode) dom.parentNode.removeChild(dom);
+        window.removeEventListener('resize', handleResize);
+        if (rendererRef.current && containerRef.current) {
+             containerRef.current.removeChild(rendererRef.current.domElement);
+             rendererRef.current.dispose();
         }
-    }
+        geometry.dispose();
+    };
   }, [mixedColors, ingredients]);
 
-  // UI
-  useEffect(() => {
-    const names = ["PastaLover99", "ChefMike", "FoodieX", "SpaghettiKing", "GioFan1", "U-Garden_Lover"];
-    const msgs = ["Look at those eyes!", "Sticky!!", "More sauce!", "10/10", "GIO is the best!", "Wow!", "Yummy leftovers!", "Is that my broccoli?", "Digital Art!", "Tutorial when?"];
-    const avs = ["🍕", "🍔", "🌭", "🥨", "🍟", "🥓"];
-    
-    const i = setInterval(() => {
-        setComments(p => [{ 
-            id: Date.now(), 
-            user: names[Math.floor(Math.random()*names.length)], 
-            text: msgs[Math.floor(Math.random()*msgs.length)], 
-            avatar: avs[Math.floor(Math.random()*avs.length)] 
-        }, ...p].slice(0, 6)); 
-        setLikes(l => l + Math.floor(Math.random()*15));
-    }, 1200);
-    return () => clearInterval(i);
-  }, []);
-
   return (
-    <div className="relative w-full h-full bg-black font-sans overflow-hidden">
-        <div ref={containerRef} className="absolute inset-0 z-0" />
+    <div className="relative w-full h-full bg-black overflow-hidden font-sans">
+        <style>{`
+            @keyframes floatBubble {
+                0% { transform: translateY(100px) scale(0.8); opacity: 0; }
+                10% { transform: translateY(0) scale(1); opacity: 1; }
+                80% { opacity: 1; }
+                100% { transform: translateY(-600px) scale(1.1); opacity: 0; }
+            }
+            .animate-float {
+                animation-name: floatBubble;
+                animation-timing-function: linear;
+                animation-fill-mode: forwards;
+            }
+        `}</style>
         
+        <div ref={containerRef} className="absolute inset-0 z-0" />
+        <video ref={videoRef} className="absolute top-0 left-0 w-1 h-1 opacity-0 pointer-events-none" muted playsInline />
+
         <div 
-            className="absolute inset-0 z-50 bg-white pointer-events-none transition-opacity duration-1000 ease-out"
+            className="absolute inset-0 bg-white pointer-events-none transition-opacity duration-1000 z-50" 
             style={{ opacity: flashOpacity }}
         />
-        
-        <div className="absolute top-4 left-4 w-72 z-20 pointer-events-none">
-            <div className="flex items-center gap-2 mb-3 bg-red-600 w-fit px-2 py-1 rounded text-white font-bold text-xs uppercase tracking-wider shadow-md">
-                <span className="animate-pulse">●</span> LIVE
-            </div>
-            <div className="space-y-2">
-                {comments.map(c => (
-                    <div key={c.id} className="flex gap-3 bg-black/40 backdrop-blur-sm p-2 rounded-lg border border-white/5 animate-slide-in-left">
-                        <div className="w-8 h-8 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-full flex items-center justify-center text-sm shadow-inner shrink-0">
-                            {c.avatar}
-                        </div>
-                        <div className="flex flex-col min-w-0">
-                            <span className="text-gray-300 text-xs font-bold truncate">{c.user}</span>
-                            <span className="text-white text-sm leading-tight shadow-black drop-shadow-sm">{c.text}</span>
-                        </div>
+
+        {/* Floating Chat */}
+        <div className="absolute inset-0 pointer-events-none overflow-hidden z-20">
+            {comments.map((c) => (
+                <div 
+                    key={c.id} 
+                    className="absolute flex items-center gap-2 px-4 py-2 bg-black/50 backdrop-blur-md rounded-full border border-white/20 shadow-xl animate-float"
+                    style={{
+                        left: `${c.left}%`,
+                        bottom: '0px',
+                        animationDuration: `${c.speed}s`,
+                        transformOrigin: 'center bottom',
+                        scale: c.sizeScale
+                    }}
+                >
+                    <div className="text-xl filter drop-shadow-md">{c.avatar}</div>
+                    <div className="flex flex-col leading-tight">
+                         <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">{c.user}</span>
+                         <span className="text-sm font-bold text-white drop-shadow-sm whitespace-nowrap">{c.text}</span>
                     </div>
+                </div>
+            ))}
+        </div>
+
+        {/* UI Controls */}
+        <div className="absolute bottom-10 left-0 w-full flex flex-col items-center gap-8 z-30 pointer-events-none">
+            
+            <div className="flex gap-3 p-2 bg-neutral-900/80 backdrop-blur-xl rounded-full border border-white/10 shadow-2xl pointer-events-auto">
+                {[
+                    { id: ParticleMode.CHAOS, icon: '💥', label: 'Exploded' },
+                    { id: ParticleMode.BOWLS, icon: '🍜', label: 'Serve' },
+                    { id: ParticleMode.HEART, icon: '❤️', label: 'Love' },
+                    { id: ParticleMode.GIO, icon: '👨‍🏫', label: 'Gio' },
+                    { id: ParticleMode.SHATTER, icon: '⬇️', label: 'Drop' },
+                ].map((m) => (
+                    <button
+                        key={m.id}
+                        onClick={() => switchMode(m.id as ParticleMode)}
+                        className={`
+                            px-4 py-3 rounded-full flex items-center gap-2 transition-all duration-300
+                            ${activeMode === m.id 
+                                ? 'bg-white text-black font-bold scale-110 shadow-[0_0_20px_rgba(255,255,255,0.4)]' 
+                                : 'text-gray-400 hover:bg-white/10 hover:text-white'}
+                        `}
+                    >
+                        <span className="text-xl">{m.icon}</span>
+                        <span className="hidden md:inline text-xs font-bold uppercase tracking-widest">{m.label}</span>
+                    </button>
                 ))}
             </div>
+
+            <div className="flex gap-6 items-center pointer-events-auto">
+                 <button 
+                    onClick={handleSendGift}
+                    className="group relative bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 text-white px-8 py-3 rounded-2xl font-bold text-lg shadow-[0_0_30px_rgba(236,72,153,0.4)] border border-white/20 transition-all active:scale-95 flex items-center gap-3 overflow-hidden"
+                 >
+                    <span className="text-2xl animate-bounce">🎁</span>
+                    <span className="relative z-10">Send Gift</span>
+                 </button>
+
+                 <button 
+                    onClick={onRestart}
+                    className="bg-white/5 hover:bg-white/15 text-white px-8 py-3 rounded-2xl font-bold text-lg border border-white/10 backdrop-blur transition-all active:scale-95 flex items-center gap-2"
+                 >
+                    <span>🔄</span> Play Again
+                 </button>
+            </div>
         </div>
 
-        <div className="absolute top-4 right-4 z-20 pointer-events-auto cursor-pointer flex flex-col items-center" onClick={() => setLikes(l=>l+1)}>
-            <div className="text-4xl animate-bounce drop-shadow-md">❤️</div>
-            <div className="text-pink-400 font-bold text-lg drop-shadow-md">{likes.toLocaleString()}</div>
+        <div className="absolute top-8 right-8 bg-black/40 backdrop-blur-md px-5 py-2 rounded-full border border-pink-500/30 text-pink-500 font-bold text-xl flex items-center gap-2 z-30 shadow-lg pointer-events-none">
+            <span className="animate-pulse">❤️</span> {likes.toLocaleString()}
         </div>
 
-        <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex gap-4 z-30 pointer-events-auto">
-            <button 
-                onClick={() => switchMode(ParticleMode.BOWLS)} 
-                className={`px-4 py-2 md:px-6 md:py-3 rounded-full font-bold shadow-lg transition-all transform hover:scale-105 active:scale-95 border-2 ${activeMode===ParticleMode.BOWLS ? 'bg-yellow-500 border-yellow-300 text-black' : 'bg-gray-800/80 border-gray-600 text-gray-300'}`}
+        {giftEffect.map(g => (
+            <div 
+                key={g.id}
+                className="absolute top-1/2 left-0 text-8xl animate-bounce pointer-events-none z-50 filter drop-shadow-[0_0_30px_rgba(255,255,255,0.6)]"
+                style={{ 
+                    left: `${g.x}%`, 
+                    marginTop: '-150px',
+                    transform: `rotate(${(Math.random()-0.5)*30}deg)`
+                }}
             >
-                🥣 Bowls
-            </button>
-            <button 
-                onClick={() => switchMode(ParticleMode.HEART)} 
-                className={`px-4 py-2 md:px-6 md:py-3 rounded-full font-bold shadow-lg transition-all transform hover:scale-105 active:scale-95 border-2 ${activeMode===ParticleMode.HEART ? 'bg-pink-600 border-pink-400 text-white' : 'bg-gray-800/80 border-gray-600 text-gray-300'}`}
-            >
-                ❤️ Heart
-            </button>
-            <button 
-                onClick={() => switchMode(ParticleMode.GIO)} 
-                className={`px-4 py-2 md:px-6 md:py-3 rounded-full font-bold shadow-lg transition-all transform hover:scale-105 active:scale-95 border-2 ${activeMode===ParticleMode.GIO ? 'bg-blue-600 border-blue-400 text-white' : 'bg-gray-800/80 border-gray-600 text-gray-300'}`}
-            >
-                🔤 GIO
-            </button>
-            <button 
-                onClick={() => switchMode(ParticleMode.SHATTER)} 
-                className={`px-4 py-2 md:px-6 md:py-3 rounded-full font-bold shadow-lg transition-all transform hover:scale-105 active:scale-95 border-2 ${activeMode===ParticleMode.SHATTER ? 'bg-red-800 border-red-600 text-white' : 'bg-gray-800/80 border-gray-600 text-gray-300'}`}
-            >
-                💥 Broken
-            </button>
-        </div>
+                {g.emoji}
+            </div>
+        ))}
+        
+        {showBowlText && (
+            <div className="absolute top-1/4 w-full text-center pointer-events-none z-20">
+                <h2 className="text-7xl md:text-9xl font-bold text-yellow-400 handwritten drop-shadow-[0_4px_4px_rgba(0,0,0,1)] animate-pulse">
+                    Order Up!
+                </h2>
+                <div className="flex justify-center mt-4">
+                     <span className="bg-red-600 text-white px-4 py-1 rounded text-xl font-bold rotate-[-2deg] shadow-lg">SOLD OUT</span>
+                </div>
+            </div>
+        )}
+
+        {isHandActiveRef.current && (
+             <div 
+                className="absolute w-20 h-20 border-4 border-white/30 rounded-full pointer-events-none z-50 transform -translate-x-1/2 -translate-y-1/2 transition-all duration-75 shadow-[0_0_20px_rgba(255,255,255,0.2)]"
+                style={{ 
+                    left: '50%', 
+                    top: '50%',
+                    transform: `translate(${mousePosRef.current.x + containerRef.current!.clientWidth/2}px, ${-mousePosRef.current.y + containerRef.current!.clientHeight/2}px)`
+                }}
+             />
+        )}
     </div>
-  );
+   );
 };

@@ -1,8 +1,10 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { BAD_INGREDIENTS, GOOD_INGREDIENTS, Ingredient, IngredientType } from '../types';
+import { FilesetResolver, HandLandmarker, DrawingUtils } from '@mediapipe/tasks-vision';
 
 interface StageCookingProps {
   onComplete: (collected: string[]) => void;
+  videoStream: MediaStream | null;
 }
 
 interface SteamParticle {
@@ -54,11 +56,13 @@ interface AttachedBubble {
     isUrgent: boolean;
 }
 
-export const StageCooking: React.FC<StageCookingProps> = ({ onComplete }) => {
+export const StageCooking: React.FC<StageCookingProps> = ({ onComplete, videoStream }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
   
   const [score, setScore] = useState(0);
+  const [visionReady, setVisionReady] = useState(false);
   
   const potActiveRef = useRef(false);
   const ingredientsRef = useRef<Ingredient[]>([]);
@@ -69,11 +73,56 @@ export const StageCooking: React.FC<StageCookingProps> = ({ onComplete }) => {
   const scoreRef = useRef(0);
   const frameIdRef = useRef<number>(0);
   const collectedRef = useRef<string[]>([]);
-  const mouseRef = useRef({ x: 0, y: 0 });
+  // Initialize to center
+  const mouseRef = useRef({ 
+      x: typeof window !== 'undefined' ? window.innerWidth / 2 : 0, 
+      y: typeof window !== 'undefined' ? window.innerHeight / 2 : 0 
+  });
   const timeRef = useRef(0);
   const shakeRef = useRef(0);
   const spawnTimerRef = useRef(0); 
   const potFireTimerRef = useRef(0);
+  const boilingStrandsRef = useRef<{offset: number, amplitude: number}[]>([]);
+
+  // Vision Refs
+  const handLandmarkerRef = useRef<HandLandmarker | null>(null);
+  const lastVideoTimeRef = useRef(-1);
+  const handResultsRef = useRef<any>(null);
+
+  // Initialize MediaPipe Hands
+  useEffect(() => {
+    const setupVision = async () => {
+        try {
+            console.log("Loading MediaPipe Hands...");
+            const vision = await FilesetResolver.forVisionTasks(
+                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+            );
+            handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: {
+                    modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
+                    delegate: "GPU"
+                },
+                runningMode: "VIDEO",
+                numHands: 1
+            });
+            console.log("MediaPipe Hands loaded!");
+            setVisionReady(true);
+        } catch (e) {
+            console.error("Failed to load MediaPipe HandLandmarker", e);
+        }
+    };
+    setupVision();
+  }, []);
+
+  // Sync Video Stream for processing
+  useEffect(() => {
+    if (videoRef.current && videoStream) {
+        videoRef.current.srcObject = videoStream;
+        videoRef.current.onloadedmetadata = () => {
+            videoRef.current?.play().catch(e => console.log("Video play error", e));
+        };
+    }
+  }, [videoStream]);
 
   // Initialize Crowd
   useEffect(() => {
@@ -111,6 +160,14 @@ export const StageCooking: React.FC<StageCookingProps> = ({ onComplete }) => {
     }
     crowd.sort((a, b) => a.y - b.y);
     crowdRef.current = crowd;
+
+    // Init boiling strands
+    for (let i = 0; i < 20; i++) {
+      boilingStrandsRef.current.push({
+        offset: Math.random() * Math.PI * 2,
+        amplitude: 5 + Math.random() * 10
+      });
+    }
   }, []);
 
   // Spawn Bubbles logic
@@ -164,7 +221,7 @@ export const StageCooking: React.FC<StageCookingProps> = ({ onComplete }) => {
       id: Date.now() + Math.random(),
       x: Math.random() * (width - 80) + 40,
       y: -60,
-      vy: 4.0 + Math.random() * 1.5,
+      vy: (4.0 + Math.random() * 1.5) * 1.3, // 1.3x Speed
       vx: (Math.random() - 0.5) * 1.0,
       rotation: Math.random() * 360,
       rotationSpeed: (Math.random() - 0.5) * 0.1,
@@ -482,6 +539,38 @@ export const StageCooking: React.FC<StageCookingProps> = ({ onComplete }) => {
     const width = canvas.width;
     const height = canvas.height;
     
+    // --- Vision Processing (Throttled) ---
+    const now = performance.now();
+    if (videoRef.current && handLandmarkerRef.current && now - lastVideoTimeRef.current > 100) {
+        lastVideoTimeRef.current = now;
+        const results = handLandmarkerRef.current.detectForVideo(videoRef.current, now);
+        handResultsRef.current = results;
+        
+        if (results.landmarks && results.landmarks.length > 0) {
+            const hand = results.landmarks[0];
+            // Movement Control (Mirroring)
+            const handX = (1 - hand[9].x) * width;
+            
+            // Smooth movement
+            mouseRef.current.x += (handX - mouseRef.current.x) * 0.2;
+            
+            // Gesture Control
+            const dx = hand[8].x - hand[4].x;
+            const dy = hand[8].y - hand[4].y;
+            const pinchDist = Math.sqrt(dx*dx + dy*dy);
+            
+            const middleTipY = hand[12].y;
+            const middlePipY = hand[10].y;
+            const isFist = middleTipY > middlePipY;
+
+            if (pinchDist < 0.1 || isFist) { 
+                potActiveRef.current = true;
+            } else {
+                potActiveRef.current = false;
+            }
+        }
+    }
+
     timeRef.current++;
 
     // Shake
@@ -520,7 +609,7 @@ export const StageCooking: React.FC<StageCookingProps> = ({ onComplete }) => {
     ctx.fillStyle = 'rgba(0,0,0,0.3)';
     ctx.fillRect(0, cookingAreaHeight, width, 20); // Shadow line
 
-    // 2. Crowd - SHIFT UP: Use (cookingAreaHeight + 20) as base instead of +60
+    // 2. Crowd
     crowdRef.current.sort((a, b) => a.y - b.y);
     crowdRef.current.forEach((member) => {
         member.x += member.vx;
@@ -536,8 +625,6 @@ export const StageCooking: React.FC<StageCookingProps> = ({ onComplete }) => {
         }
 
         const cx = (member.x / 100) * width;
-        // Shift Y up so they aren't cut off. Range 0-1 mapped to 40px depth. 
-        // Base y = cookingAreaHeight + 20 puts feet on floor.
         const cy = cookingAreaHeight + 20 + (member.y * 40); 
         drawDetailedStudent(ctx, member, cx, cy, 80);
     });
@@ -554,9 +641,8 @@ export const StageCooking: React.FC<StageCookingProps> = ({ onComplete }) => {
         const target = crowdRef.current.find(m => m.id === bubble.targetStudentId);
         if (target) {
             const bx = (target.x / 100) * width;
-            // Adjust bubble anchor to match new student height
             let by = cookingAreaHeight + 20 + (target.y * 40) - 95;
-            if (target.isAngry) by -= 70; // Move bubble higher if angry popup exists
+            if (target.isAngry) by -= 70;
 
             ctx.save();
             ctx.globalAlpha = Math.min(1, bubble.life * 2);
@@ -603,7 +689,7 @@ export const StageCooking: React.FC<StageCookingProps> = ({ onComplete }) => {
     ctx.bezierCurveTo(potX - 40, potY + 10, potX - 40, potY - 20, potX + 20, potY);
     ctx.stroke();
 
-    // Pot Body
+    // Pot Body Background
     const gradPot = ctx.createLinearGradient(potX, potY, potX + potWidth, potY + potHeight);
     gradPot.addColorStop(0, '#374151');
     gradPot.addColorStop(1, '#111827');
@@ -612,8 +698,49 @@ export const StageCooking: React.FC<StageCookingProps> = ({ onComplete }) => {
     ctx.moveTo(potX, potY + 15);
     ctx.bezierCurveTo(potX, potY + potHeight + 20, potX + potWidth, potY + potHeight + 20, potX + potWidth, potY + 15);
     ctx.fill();
+
+    // Boiling Pasta Inside Pot
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(potX, potY + 15);
+    ctx.bezierCurveTo(potX, potY + potHeight + 20, potX + potWidth, potY + potHeight + 20, potX + potWidth, potY + 15);
+    ctx.clip();
+
+    ctx.strokeStyle = '#fde047'; 
+    ctx.lineWidth = 3;
+    ctx.lineCap = 'round';
     
-    // Rim
+    // Draw boiling strands
+    const boilingTime = timeRef.current * 0.2;
+    boilingStrandsRef.current.forEach((strand, i) => {
+      const xOffset = (potWidth / boilingStrandsRef.current.length) * i;
+      const baseX = potX + 10 + xOffset;
+      const baseY = potY + 20 + Math.sin(boilingTime + strand.offset) * 5;
+      
+      ctx.beginPath();
+      ctx.moveTo(baseX, baseY);
+      ctx.quadraticCurveTo(
+        baseX + Math.sin(boilingTime * 2 + strand.offset) * 10, 
+        baseY + 25, 
+        baseX + Math.cos(boilingTime * 1.5 + strand.offset) * 5, 
+        baseY + 50
+      );
+      ctx.stroke();
+    });
+
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+    for(let i=0; i<5; i++) {
+        const bubbleX = potX + 20 + Math.random() * (potWidth - 40);
+        const bubbleY = potY + 20 + Math.random() * 40;
+        const bubbleSize = 2 + Math.random() * 4;
+        ctx.beginPath();
+        ctx.arc(bubbleX, bubbleY, bubbleSize, 0, Math.PI*2);
+        ctx.fill();
+    }
+    
+    ctx.restore();
+    
+    // Pot Rim
     ctx.fillStyle = '#4b5563';
     ctx.beginPath(); ctx.ellipse(potX + potWidth/2, potY + 15, potWidth/2, 12, 0, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = '#9ca3af';
@@ -622,7 +749,7 @@ export const StageCooking: React.FC<StageCookingProps> = ({ onComplete }) => {
 
     // 4. Ingredients
     spawnTimerRef.current++;
-    if (spawnTimerRef.current > 25) { // Uniform
+    if (spawnTimerRef.current > 25) { 
         ingredientsRef.current.push(spawnIngredient(width));
         spawnTimerRef.current = 0;
     }
@@ -700,15 +827,69 @@ export const StageCooking: React.FC<StageCookingProps> = ({ onComplete }) => {
         }
     }
 
-    // Cursor
+    // Cursor / Hand Feedback
+    ctx.save();
+    
+    // Draw Hand Skeleton FOLLOWING THE CURSOR
+    if (handResultsRef.current && handResultsRef.current.landmarks && handResultsRef.current.landmarks.length > 0) {
+        const landmarks = handResultsRef.current.landmarks[0];
+        const connections = HandLandmarker.HAND_CONNECTIONS;
+        
+        // We want the skeleton to be centered around the mouse cursor
+        // The mouseRef.current tracks landmark[9] (middle knuckle)
+        // So we offset all points relative to landmark[9]
+        
+        const centerNode = landmarks[9]; // Middle Knuckle as anchor
+        const scaleFactor = 50; // Hand width in pixels (Reduced to ~100px total spread)
+        
+        const getDrawX = (val: number) => {
+            // Relative X from center node (mirrored direction)
+            const diff = (1 - val) - (1 - centerNode.x);
+            return mouseRef.current.x + diff * scaleFactor * 3; // Mult for visual scale
+        };
+        const getDrawY = (val: number) => {
+            const diff = val - centerNode.y;
+            return mouseRef.current.y + diff * scaleFactor * 3;
+        };
+
+        ctx.lineWidth = 2;
+        ctx.lineCap = 'round';
+        ctx.strokeStyle = isActive ? '#ef4444' : '#fbbf24'; 
+        
+        // Draw connections
+        connections.forEach(conn => {
+            const start = landmarks[conn.start];
+            const end = landmarks[conn.end];
+            ctx.beginPath();
+            ctx.moveTo(getDrawX(start.x), getDrawY(start.y));
+            ctx.lineTo(getDrawX(end.x), getDrawY(end.y));
+            ctx.stroke();
+        });
+
+        // Draw joints
+        ctx.fillStyle = isActive ? '#ef4444' : '#fbbf24';
+        landmarks.forEach((lm: any) => {
+            ctx.beginPath();
+            ctx.arc(getDrawX(lm.x), getDrawY(lm.y), 3, 0, Math.PI*2);
+            ctx.fill();
+        });
+    }
+    
+    // Regular Cursor Icon (Chef Hand) - ALWAYS VISIBLE
     const cursorX = mouseRef.current.x;
     const cursorY = mouseRef.current.y;
-    ctx.save();
+    
     ctx.translate(cursorX, cursorY);
     ctx.font = "40px Arial";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(isActive ? '✊' : '✋', 0, 0);
+    
+    // Only show emoji hand if NO skeleton detected
+    if (!handResultsRef.current?.landmarks?.length) {
+        ctx.fillText(isActive ? '✊' : '✋', 0, 0);
+    }
+    
+    // CHEF HAT - ALWAYS VISIBLE
     ctx.font = "30px Arial";
     ctx.fillText('👨‍🍳', 5, -35 + Math.sin(timeRef.current * 0.2) * 2);
     ctx.restore();
@@ -730,6 +911,9 @@ export const StageCooking: React.FC<StageCookingProps> = ({ onComplete }) => {
   }, []);
 
   const handleMouseMove = (e: React.MouseEvent | React.TouchEvent) => {
+    // Only use mouse if no hand detected recently
+    if (handResultsRef.current && handResultsRef.current.landmarks && handResultsRef.current.landmarks.length > 0) return;
+
     if (!canvasRef.current) return;
     const rect = canvasRef.current.getBoundingClientRect();
     let clientX, clientY;
@@ -764,10 +948,18 @@ export const StageCooking: React.FC<StageCookingProps> = ({ onComplete }) => {
       onTouchEnd={handleUp}
     >
       <canvas ref={canvasRef} className="block w-full h-full" />
+      <video ref={videoRef} className="absolute top-0 left-0 w-1 h-1 opacity-0 pointer-events-none" muted playsInline />
       
-      <div className="absolute top-0 left-0 w-full flex justify-center pointer-events-none z-50">
-         <div className="bg-red-600/90 text-white font-bold px-8 py-1 rounded-b-xl shadow-lg border-x border-b border-red-400 animate-pulse tracking-widest text-lg">
-             ✊ CLENCH FIST TO CATCH FOOD
+      {/* Interaction Hint */}
+      <div className="absolute top-0 w-full flex justify-center pointer-events-none z-40">
+        <div className="bg-black/50 backdrop-blur text-white/80 px-6 py-2 rounded-b-xl border border-white/10 text-sm font-mono tracking-wide">
+            Move Mouse / Hand to Control Pot
+        </div>
+      </div>
+
+      <div className="absolute top-0 left-0 w-full flex justify-center pointer-events-none z-50 mt-12">
+         <div className="bg-red-600/90 text-white font-bold px-8 py-1 rounded-xl shadow-lg border border-red-400 animate-pulse tracking-widest text-lg">
+             {!visionReady ? "LOADING VISION..." : "✊ CLENCH FIST TO CATCH FOOD"}
          </div>
       </div>
 
