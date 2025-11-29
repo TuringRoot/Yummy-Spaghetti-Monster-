@@ -212,7 +212,6 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
   const videoRef = useRef<HTMLVideoElement>(null);
   
   // Eye Physics (Relative to Camera)
-  // Reduced spacing: +/- 50 instead of 100
   const eyePhysicsRef = useRef([
       { x: -50, y: 50, z: -200, vx: 0, vy: 0, vz: 0, anchorX: -50, anchorY: 80 }, 
       { x: 50, y: 50, z: -200, vx: 0, vy: 0, vz: 0, anchorX: 50, anchorY: 80 }
@@ -378,19 +377,20 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
     scene.add(mesh);
     instancedMeshRef.current = mesh;
 
-    // Bowls - Use High Quality Glass Material
+    // Bowls - Shorter and Warmer
     const bowlPoints = [];
     for (let i = 0; i < 10; i++) {
-        bowlPoints.push(new THREE.Vector2(Math.sin(i * 0.2) * 20 + 5, (i - 5) * 5));
+        // Wider (25) and shorter height step (2.5) for a shallower bowl
+        bowlPoints.push(new THREE.Vector2(Math.sin(i * 0.2) * 25 + 8, (i - 5) * 2.5));
     }
     const bowlGeo = new THREE.LatheGeometry(bowlPoints, 30);
-    // Updated Material for Porcelain/Glass Look
+    // Warm color for ceramic feel
     const bowlMat = new THREE.MeshPhysicalMaterial({ 
-        color: 0xffffff, 
-        roughness: 0.15,
-        transmission: 0.6, // Glass-like
+        color: 0xffdab9, // Peach Puff
+        roughness: 0.2,
+        transmission: 0.4, // Less glass-like
         thickness: 2,
-        clearcoat: 1.0,
+        clearcoat: 0.5,
         side: THREE.DoubleSide
     });
     const bowlMesh = new THREE.InstancedMesh(bowlGeo, bowlMat, BOWL_COUNT);
@@ -500,6 +500,20 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
 
     return () => {
         window.removeEventListener('resize', handleResize);
+        // Resource Cleanup
+        geometry.dispose();
+        material.dispose();
+        bowlGeo.dispose();
+        bowlMat.dispose();
+        eyeG.dispose();
+        eyeM.dispose();
+        pupilL.geometry.dispose();
+        pupilL.material.dispose();
+        pupilR.geometry.dispose();
+        pupilR.material.dispose();
+        nerveGeo.dispose();
+        nerveMat.dispose();
+        
         renderer.dispose();
     };
   }, [mixedColors, ingredientTextures]);
@@ -776,18 +790,23 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
 
                 // Update Thick Nerve (Cylinder)
                 const nerve = nervesGroup.children[i];
-                // Anchor point is higher up off screen, adjusted to new width
+                
+                // Anchor point (Top of screen relative to camera)
                 const start = new THREE.Vector3(eye.anchorX, 400, -250); 
                 const end = new THREE.Vector3(eye.x, eye.y, eye.z);
-                const distance = start.distanceTo(end);
+                
+                // Vector math for perfect connection
+                const direction = new THREE.Vector3().subVectors(end, start);
+                const len = direction.length();
                 
                 // Position at midpoint
                 nerve.position.copy(start).add(end).multiplyScalar(0.5);
-                // Look at end
-                nerve.lookAt(end);
-                // Rotate 90 deg because cylinder default is Y-axis
-                nerve.rotateX(Math.PI / 2);
-                nerve.scale.set(1, distance, 1);
+                
+                // Scale height to distance + slight overlap padding
+                nerve.scale.set(1, len + 5, 1);
+                
+                // Orientation: Align Y (0,1,0) to direction vector using quaternions to prevent gaps
+                nerve.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize());
             });
         }
 
@@ -1002,8 +1021,8 @@ export const StageAftermath: React.FC<StageAftermathProps> = ({ onRestart, mixed
       {mode === 'DINING' && (
           <div className="absolute top-1/4 w-full flex justify-center pointer-events-none z-30 animate-pulse">
               <div className="backdrop-blur-sm px-10 py-4 rounded-full shadow-[0_0_50px_rgba(251,191,36,0.3)]">
-                  <h2 className="text-5xl font-serif font-bold tracking-widest uppercase text-transparent bg-clip-text bg-gradient-to-r from-yellow-100 via-amber-300 to-yellow-500 drop-shadow-[0_4px_4px_rgba(0,0,0,0.8)]">
-                      🍝 U-Garden Feast 🍝
+                  <h2 className="text-6xl font-['Indie_Flower'] font-bold tracking-wider text-transparent bg-clip-text bg-gradient-to-r from-yellow-100 via-amber-300 to-yellow-500 drop-shadow-[0_4px_4px_rgba(0,0,0,0.8)]">
+                      Welcome! Time to Eat!
                   </h2>
               </div>
           </div>

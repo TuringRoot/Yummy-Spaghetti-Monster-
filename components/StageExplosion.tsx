@@ -44,7 +44,7 @@ export const StageExplosion: React.FC<StageExplosionProps> = ({ onComplete }) =>
   const eyeBulge = 1 + progress * 1.5;
   const whiteout = progress > 0.85 ? (progress - 0.85) * 6.6 : 0;
 
-  // Flying Pasta Debris - Adjusted to start closer to center
+  // Flying Pasta Debris
   const debris = [
       { angle: 45, dist: 280 + progress * 800, rot: progress * 720 },
       { angle: 135, dist: 300 + progress * 900, rot: -progress * 500 },
@@ -70,10 +70,25 @@ export const StageExplosion: React.FC<StageExplosionProps> = ({ onComplete }) =>
         }}
       >
         <defs>
-              <radialGradient id="gradMouthExplode" cx="50%" cy="50%" r="50%">
-                  <stop offset="30%" stopColor="#2a0a0a" />
-                  <stop offset="90%" stopColor="#ef4444" />
+              {/* Emoji Skin Gradient */}
+              <radialGradient id="gradEmojiSkin" cx="50%" cy="40%" r="50%">
+                  <stop offset="0%" stopColor="#fde047" /> {/* Yellow-300 */}
+                  <stop offset="70%" stopColor="#eab308" /> {/* Yellow-500 */}
+                  <stop offset="100%" stopColor="#ca8a04" /> {/* Yellow-600 */}
               </radialGradient>
+
+              {/* Deep Mouth Gradient */}
+              <radialGradient id="gradMouthExplode" cx="50%" cy="50%" r="50%">
+                  <stop offset="30%" stopColor="#450a0a" />
+                  <stop offset="90%" stopColor="#7f1d1d" />
+              </radialGradient>
+
+              {/* Gloss Highlight */}
+              <linearGradient id="gradGloss" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%" stopColor="white" stopOpacity="0.8" />
+                  <stop offset="100%" stopColor="white" stopOpacity="0" />
+              </linearGradient>
+
               <pattern id="noodleTexture" x="0" y="0" width="40" height="40" patternUnits="userSpaceOnUse">
                    <path d="M 0 20 Q 10 0 20 20 T 40 20" stroke="#fcd34d" strokeWidth="3" fill="none" opacity="0.6" />
                    <path d="M 20 0 Q 30 20 40 0" stroke="#f59e0b" strokeWidth="3" fill="none" opacity="0.5" />
@@ -97,12 +112,17 @@ export const StageExplosion: React.FC<StageExplosionProps> = ({ onComplete }) =>
 
              {/* Face Container */}
              <g>
-                 {/* Furious Textured Face Base */}
-                 <circle r={280} fill={progress > 0.5 ? "#991b1b" : "#fbbf24"} />
-                 <circle r={280} fill="url(#noodleTexture)" />
+                 {/* Emoji Base */}
+                 <circle r={280} fill="url(#gradEmojiSkin)" />
                  
-                 {/* Red Overlay for Rage */}
-                 <circle r={280} fill="#ef4444" opacity={Math.min(1, progress * 1.5)} style={{mixBlendMode: 'multiply'}} />
+                 {/* Glossy Highlight at top */}
+                 <ellipse cx="0" cy="-140" rx="160" ry="80" fill="url(#gradGloss)" opacity="0.6" />
+
+                 {/* Subtle Noodle Texture overlay */}
+                 <circle r={280} fill="url(#noodleTexture)" style={{mixBlendMode: 'overlay'}} opacity="0.3" />
+                 
+                 {/* Red Overlay for Rage/Heat */}
+                 <circle r={280} fill="#ef4444" opacity={Math.min(1, progress * 1.5)} style={{mixBlendMode: 'color-burn'}} />
 
                  {/* Dynamic Mouth Shape - Ripping Open */}
                  <path 
@@ -123,39 +143,39 @@ export const StageExplosion: React.FC<StageExplosionProps> = ({ onComplete }) =>
                  </g>
 
                  {/* Eyes - Bulging Out */}
-                 <g transform={`translate(0, ${-mouthOpen * 60 - 100})`}> 
+                 <g transform={`translate(0, ${-mouthOpen * 60 - 80})`}> 
                      
                      {/* Left Eye */}
-                     <g transform={`translate(-160, -100) scale(${eyeBulge})`}>
-                        <circle r={70} fill="white" stroke="#000" strokeWidth="4" />
-                        <circle cx={(Math.random()-0.5)*20} cy={(Math.random()-0.5)*20} r={12} fill="#000" />
+                     <g transform={`translate(-140, -80) scale(${eyeBulge})`}>
+                        <ellipse rx="70" ry="85" fill="white" stroke="#92400e" strokeWidth="4" />
+                        <circle cx={(Math.random()-0.5)*20} cy={(Math.random()-0.5)*20} r={18} fill="#000" />
+                        <circle cx={-5} cy={-5} r={5} fill="white" opacity="0.7" />
                         
                         {/* Bloodshot veins */}
                         <path d="M -35 35 L 0 0" stroke="#ef4444" strokeWidth="4" opacity={progress} />
                         <path d="M 35 35 L 0 0" stroke="#ef4444" strokeWidth="4" opacity={progress} />
-                        <path d="M 0 -35 L 0 0" stroke="#ef4444" strokeWidth="4" opacity={progress} />
                         
                         {/* Angry Brow - Raised high */}
                         <path 
-                          d={`M -110 -130 L 90 -20`} 
-                          stroke="#000" strokeWidth="25" strokeLinecap="round"
+                          d={`M -90 -110 Q 0 -60 100 -50`} 
+                          stroke="#713f12" strokeWidth="20" strokeLinecap="round" fill="none"
                         />
                      </g>
 
                      {/* Right Eye */}
-                     <g transform={`translate(160, -100) scale(${eyeBulge})`}>
-                        <circle r={70} fill="white" stroke="#000" strokeWidth="4" />
-                        <circle cx={(Math.random()-0.5)*20} cy={(Math.random()-0.5)*20} r={12} fill="#000" />
+                     <g transform={`translate(140, -80) scale(${eyeBulge})`}>
+                        <ellipse rx="70" ry="85" fill="white" stroke="#92400e" strokeWidth="4" />
+                        <circle cx={(Math.random()-0.5)*20} cy={(Math.random()-0.5)*20} r={18} fill="#000" />
+                        <circle cx={-5} cy={-5} r={5} fill="white" opacity="0.7" />
                         
                         {/* Bloodshot veins */}
                         <path d="M -35 35 L 0 0" stroke="#ef4444" strokeWidth="4" opacity={progress} />
                         <path d="M 35 35 L 0 0" stroke="#ef4444" strokeWidth="4" opacity={progress} />
-                        <path d="M 0 -35 L 0 0" stroke="#ef4444" strokeWidth="4" opacity={progress} />
 
                         {/* Angry Brow - Raised high */}
                         <path 
-                          d={`M 110 -130 L -90 -20`} 
-                          stroke="#000" strokeWidth="25" strokeLinecap="round"
+                          d={`M 90 -110 Q 0 -60 -100 -50`} 
+                          stroke="#713f12" strokeWidth="20" strokeLinecap="round" fill="none"
                         />
                      </g>
                  </g>
@@ -163,8 +183,8 @@ export const StageExplosion: React.FC<StageExplosionProps> = ({ onComplete }) =>
              
              {/* Intense Veins popping on face */}
              <g opacity={progress}>
-                <path d="M -300 -250 Q -350 -300 -260 -350" stroke="#7f1d1d" strokeWidth="18" fill="none" strokeLinecap="round" />
-                <path d="M 300 -250 Q 350 -300 260 -350" stroke="#7f1d1d" strokeWidth="18" fill="none" strokeLinecap="round" />
+                <path d="M -300 -250 Q -350 -300 -260 -350" stroke="#b91c1c" strokeWidth="12" fill="none" strokeLinecap="round" />
+                <path d="M 300 -250 Q 350 -300 260 -350" stroke="#b91c1c" strokeWidth="12" fill="none" strokeLinecap="round" />
              </g>
         </g>
       </svg>
