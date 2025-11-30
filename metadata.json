@@ -1,0 +1,7 @@
+{
+  "name": "Copy of Spaghetti Monster Web",
+  "description": "A digital cooking adventure where you feed a spaghetti monster. Originally a Python concept, now a React web experience.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
